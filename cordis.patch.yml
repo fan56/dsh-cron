@@ -1,0 +1,8 @@
+# dsh-cron bundle patch: mounts the plugin into the profile's assembly tree
+# under the stable plugin id `dsh-cron`. It registers the `cron` settings
+# namespace, the cron_create/list/delete/report tools on every runtime agent,
+# and the /cron slash command.
+
+- insert:
+    - id: dsh-cron
+      name: '@aiwayds/dsh-cron'

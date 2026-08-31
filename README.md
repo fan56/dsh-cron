@@ -73,6 +73,14 @@ dsh plugin --profile tui add @aiwayds/dsh-cron
 
 Then add the package to the profile's `dsh.profile.bundles` (after `@deepseek-ai/dsh-base`) and restart the profile.
 
+### Skill (model guidance)
+
+The npm tarball ships a `cron` skill (`skill/cron/SKILL.md`) that teaches the model when and how to use the tools (rule selection, window thinking, the deploy-monitor and watchdog patterns). Install it by copying to the dsh skill root:
+
+```bash
+mkdir -p $DSH_HOME/skills && cp -r <package>/skill/cron $DSH_HOME/skills/
+```
+
 ### Settings (`cron` namespace in settings.yaml)
 
 | Key | Default | Meaning |

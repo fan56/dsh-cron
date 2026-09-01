@@ -21,7 +21,12 @@ import { mkdirSync } from 'node:fs'
 // without it still load this plugin — see the guarded registration below.
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+// Type-only side-effect import: loads dsh-settings' `declare module
+// '@deepseek-ai/cordis'` augmentation, which is what puts `ctx.settings` on
+// the Context type. There is no runtime import — the host provides the
+// settings service; dsh-settings 0.1.2-alpha.3 removed the
+// settingsNamespace() helper this file used to import.
+import type {} from '@deepseek-ai/dsh-settings'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 
@@ -37,7 +42,12 @@ export const name = 'dsh-cron'
 /** Services required before the engine can mount. */
 export const inject = ['settings', 'agents', 'tools']
 
-const OWN_NS = settingsNamespace('cron')
+// dsh-settings 0.1.2-alpha.3 removed the runtime settingsNamespace() helper:
+// register() now brand-checks the namespace at the type level
+// (SettingsNamespaceInput) and validates the same lowercase-hyphenated
+// pattern at runtime via parseSettingsNamespace. A plain literal is the
+// supported spelling (same adaptation as dsh-model-sync).
+const OWN_NS = 'cron'
 
 /** The `cron` settings namespace: user-editable in settings.yaml. */
 const CronSettings = z.object({

@@ -10,7 +10,9 @@
  */
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
-import type { JsonValue } from '@deepseek-ai/dsh-session';
+// Type only: dsh-session 0.1.2-alpha.3 stopped re-exporting JsonValue; the
+// canonical definition moved to the dsh-util-values split package.
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { MIN_EVERY_SECONDS, ruleToHuman } from './rule.ts';
 import { nextOccurrence } from './rule.ts';
 import type { CronEngine } from './scheduler.ts';

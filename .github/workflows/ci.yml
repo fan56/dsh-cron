@@ -74,3 +74,19 @@ jobs:
 
       - name: Boot smoke (real dsh host, scratch profile)
         run: node scripts/smoke-boot.mjs
+
+  e2e:
+    name: E2E (podman, mock-LLM fire chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # The suite needs no credentials: the scenario profile points the dsh
+      # agent at an in-container OpenAI-compatible mock that scripts the
+      # cron_create / subagent / cron_report turns, so the whole fire chain
+      # (create -> 60s tick -> followup -> report -> store) runs against the
+      # real dsh host deterministically. CLEAN_NETWORK=1 builds from the
+      # official base image and nodejs.org (no dev-machine mirrors).
+      - name: Run the podman e2e suite
+        run: CLEAN_NETWORK=1 ./e2e/run-e2e.sh

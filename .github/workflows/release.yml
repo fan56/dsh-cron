@@ -3,9 +3,9 @@
 # gates before publish, idempotent publish, `npm view` as the only accepted
 # proof, release job never repeats the publish.
 #
-# NOTE: no npm --provenance — provenance requires a PUBLIC repo; this repo is
-# private for now. Re-add the OIDC flag (and `id-token: write`) when/if the
-# repo goes public.
+# The publish carries npm --provenance (the repo is public): that needs
+# `id-token: write` for the OIDC claim, and the provenance then links the
+# npm package to this repo's build.
 name: Release
 
 on:
@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
@@ -73,7 +74,7 @@ jobs:
             exit 0
           fi
           set +e
-          PUB_OUT="$(npm publish --access public 2>&1)"
+          PUB_OUT="$(npm publish --access public --provenance 2>&1)"
           PUB_RC=$?
           set -e
           printf '%s\n' "$PUB_OUT"

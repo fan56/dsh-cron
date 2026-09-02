@@ -5,6 +5,10 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fan56/dsh-cron.git"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -1,0 +1,6 @@
+node_modules
+.git
+lib
+dist
+*.tgz
+e2e

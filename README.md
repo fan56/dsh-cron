@@ -113,6 +113,22 @@ src/
 test/             unit suites over the compiled lib (fake clocks/agents)
 scripts/
   smoke-boot.mjs  real-host smoke: pack → scratch profile → boot
+e2e/              podman suite: real dsh TUI in tmux driven against a scripted mock LLM
+```
+
+## E2E
+
+`e2e/run-e2e.sh` builds a container image (Ubuntu + Node + a global dsh install + the packed plugin tarball) and drives the real TUI in tmux against an in-container **mock OpenAI-compatible LLM** — no credentials, fully deterministic, the same suite that gates CI. The scenarios exercise the whole chain end to end:
+
+1. profile assembly — the plugin composes into the real dsh bundle tree
+2. TUI boot against the scripted provider
+3. self-mode chain — the model creates a task, the scheduler fires after 60s, the `[CRON FIRE]` framing lands in a live turn, `cron_report` backfills the record, the store asserts `status: completed`
+4. sub-agent chain — the fire spawns a real dsh subagent whose `cron_report` is backfilled by the child
+5. commands & expiry — `/cron list` / `/cron help`, the window closes, the task archives itself as `expired`, `/cron delete` archives as `cancelled`
+
+```bash
+./e2e/run-e2e.sh                   # dev machine (uses registry mirrors)
+CLEAN_NETWORK=1 ./e2e/run-e2e.sh   # CI-like network (official endpoints)
 ```
 
 Ported from [@aiwayds/pi-kimi-cron](https://github.com/fan56/pi-kimi-cron) (itself ported from Kimi Code's cron module), redesigned for dsh's runtime — the deltas are all recorded in [docs/adr/](./docs/adr).

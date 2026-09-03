@@ -2,6 +2,8 @@
 
 Cron scheduling for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as an independent plugin: schedule prompts on standard cron expressions or fixed intervals and have them delivered to live agents — across TUI, web, and feishu surfaces.
 
+**Requires dsh >= 0.1.2-rc.1** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
+
 Design docs: [CONTEXT.md](./CONTEXT.md) (glossary) and [docs/adr/](./docs/adr) (decisions).
 
 ## Why not dsh-schedule?

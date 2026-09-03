@@ -22,11 +22,27 @@ if [ -z "${ENGINE}" ]; then
   exit 1
 fi
 
+# Same resolution rule as ci.yml / release.yml: newest of the `latest`
+# (stable) and `next` (rc) dist-tags, never hand-pinned and never the
+# retired `alpha` tag.
+NPM_VIEW_REG=()
+if ! npm view @deepseek-ai/dsh@latest version >/dev/null 2>&1; then
+  NPM_VIEW_REG=(--registry=https://registry.npmjs.org)
+fi
+STABLE="$(npm view @deepseek-ai/dsh@latest version "${NPM_VIEW_REG[@]}")"
+RC="$(npm view @deepseek-ai/dsh@next version "${NPM_VIEW_REG[@]}" 2>/dev/null || true)"
+DSH_VERSION="$STABLE"
+if [ -n "$RC" ] && [ "$(printf '%s\n' "$STABLE" "$RC" | sort -V | tail -1)" = "$RC" ]; then
+  DSH_VERSION="$RC"
+fi
+printf '==> dsh closure: %s\n' "$DSH_VERSION"
+
 if [ "${CLEAN_NETWORK:-0}" = "1" ]; then
-  BUILD_ARGS=()
+  BUILD_ARGS=(--build-arg DSH_VERSION="$DSH_VERSION")
 else
   BUILD_ARGS=(--build-arg BASE_IMAGE=docker.m.daocloud.io/library/ubuntu:24.04 \
-              --build-arg NODE_DIST_BASE=https://npmmirror.com/mirrors/node)
+              --build-arg NODE_DIST_BASE=https://npmmirror.com/mirrors/node \
+              --build-arg DSH_VERSION="$DSH_VERSION")
 fi
 
 printf '==> building image %s (context: %s, engine: %s)\n' "$IMAGE" "$REPO_ROOT" "$ENGINE"

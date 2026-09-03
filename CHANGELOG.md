@@ -1,5 +1,18 @@
 # @aiwayds/dsh-cron
 
+## 0.2.0 (2026-09-03)
+
+Rides the dsh RC/stable line; the alpha line is retired (policy 2026-09-03):
+
+- CI and release workflows install the dsh CLI by resolving the newest of the
+  `latest` (stable) and `next` (rc) dist-tags at runtime — never `@alpha`,
+  never hand-pinned. When a stable 0.1.2+ lands on `latest` it wins over the
+  rc by plain semver compare.
+- Dependencies: peer floors move to `>=0.1.2-rc.1` and the dev closure is
+  pinned exactly at 0.1.2-rc.1 (was 0.1.2-alpha.4).
+- README now states the plugin targets the dsh RC/stable line only — the
+  alpha line is no longer supported.
+
 ## 0.1.0 (2026-09-02)
 
 Initial release: bounded cron tasks with calendar & interval rules, per-task

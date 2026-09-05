@@ -1,5 +1,20 @@
 # @aiwayds/dsh-cron
 
+## 0.2.1 (2026-09-05)
+
+Clean uninstall, documented and proven:
+
+- README gains an Uninstall section: the removal command, what the host
+  auto-cleans (bundles entry + patch layer — schedules silently stop firing),
+  what stays on disk and why (`storages/cron/` task files and `_history.json`
+  are kept so a reinstall rehydrates them), the purge command, and the ADR
+  0002 reinstall semantics (downtime-accrued occurrences are skipped; missed
+  one-shots are archived as `missed`, never delivered late).
+- The boot smoke (`scripts/smoke-boot.mjs`) adds an uninstall leg: after the
+  boot proof it runs `dsh plugin --profile smoke remove` and asserts the
+  composed tree is reconciled back to stock (plugin id gone from a fresh
+  `--dump-config`).
+
 ## 0.2.0 (2026-09-03)
 
 Rides the dsh RC/stable line; the alpha line is retired (policy 2026-09-03):

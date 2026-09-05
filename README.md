@@ -75,6 +75,27 @@ dsh plugin --profile tui add @aiwayds/dsh-cron
 
 Then add the package to the profile's `dsh.profile.bundles` (after `@deepseek-ai/dsh-base`) and restart the profile.
 
+## Uninstall
+
+```bash
+dsh plugin --profile tui remove @aiwayds/dsh-cron
+```
+
+The host reconciles the profile automatically: the `dsh.profile.bundles` entry is spliced and the plugin's patch layer drops — schedules silently stop firing.
+
+What stays on disk, kept on purpose (deleting data is destructive, and a reinstall rehydrates it):
+
+- `<dsh home>/storages/cron/<id>.json` — active tasks with their fire records, including the schedules' validity windows.
+- `<dsh home>/storages/cron/_history.json` — the capped archive of ended tasks.
+
+Reinstall semantics follow [ADR 0002](./docs/adr/0002-skip-missed-occurrences.md): occurrences that came due while the plugin was away are **skipped and logged, never delivered late** — a one-shot missed in downtime is archived as `missed`. Cron means "execute at time X"; the plugin does not resurrect stale work after a gap.
+
+The `cron` skill copied to `$DSH_HOME/skills/cron` (see [Skill](#skill-model-guidance)) is a plain file copy and survives removal — delete it by hand if unwanted. To purge the task data too:
+
+```bash
+rm -r ~/.dsh/storages/cron
+```
+
 ### Skill (model guidance)
 
 The npm tarball ships a `cron` skill (`skill/cron/SKILL.md`) that teaches the model when and how to use the tools (rule selection, window thinking, the deploy-monitor and watchdog patterns). Install it by copying to the dsh skill root:

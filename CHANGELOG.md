@@ -1,5 +1,11 @@
 # @aiwayds/dsh-cron
 
+## Unreleased
+
+### Changed
+- dsh closure moved to 0.1.5-rc.1（dev pins、overrides、locks）。
+- e2e runner：registry 标志改为标量，bash 3.2 的 `set -u` 不再被空数组展开卡住（与 dsh-tui-pi 的 runner 同款修复）。
+
 ## 0.2.1 (2026-09-05)
 
 Clean uninstall, documented and proven:

@@ -24,13 +24,14 @@ fi
 
 # Same resolution rule as ci.yml / release.yml: newest of the `latest`
 # (stable) and `next` (rc) dist-tags, never hand-pinned and never the
-# retired `alpha` tag.
-NPM_VIEW_REG=()
+# retired `alpha` tag. Scalar (not array) so bash 3.2's `set -u` does not
+# trip on the empty-array expansion — same fix as dsh-tui-pi's runner.
+NPM_VIEW_REG=""
 if ! npm view @deepseek-ai/dsh@latest version >/dev/null 2>&1; then
-  NPM_VIEW_REG=(--registry=https://registry.npmjs.org)
+  NPM_VIEW_REG="--registry=https://registry.npmjs.org"
 fi
-STABLE="$(npm view @deepseek-ai/dsh@latest version "${NPM_VIEW_REG[@]}")"
-RC="$(npm view @deepseek-ai/dsh@next version "${NPM_VIEW_REG[@]}" 2>/dev/null || true)"
+STABLE="$(npm view @deepseek-ai/dsh@latest version $NPM_VIEW_REG)"
+RC="$(npm view @deepseek-ai/dsh@next version $NPM_VIEW_REG 2>/dev/null || true)"
 DSH_VERSION="$STABLE"
 if [ -n "$RC" ] && [ "$(printf '%s\n' "$STABLE" "$RC" | sort -V | tail -1)" = "$RC" ]; then
   DSH_VERSION="$RC"

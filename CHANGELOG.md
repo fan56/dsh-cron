@@ -1,6 +1,6 @@
 # @aiwayds/dsh-cron
 
-## Unreleased
+## 0.3.0 (2026-09-11)
 
 ### Changed
 - dsh closure 升至 0.1.5-rc.2（dev pins、overrides、locks、README support floor；rc.2 无 API/协议变化，纯依赖跟进）。

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- dsh closure 升至 0.1.5-rc.2（dev pins、overrides、locks、README support floor；rc.2 无 API/协议变化，纯依赖跟进）。
 - dsh closure moved to 0.1.5-rc.1（dev pins、overrides、locks）。
 - e2e runner：registry 标志改为标量，bash 3.2 的 `set -u` 不再被空数组展开卡住（与 dsh-tui-pi 的 runner 同款修复）。
 

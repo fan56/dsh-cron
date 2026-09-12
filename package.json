@@ -1,7 +1,7 @@
 {
   "name": "@aiwayds/dsh-cron",
   "version": "0.1.0",
-  "description": "dsh plugin: cron scheduling \u2014 bounded tasks with calendar & interval rules, delivered to live agents",
+  "description": "dsh plugin: cron scheduling — bounded tasks with calendar & interval rules, delivered to live agents",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -27,7 +27,8 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "pretest": "tsc -p tsconfig.json",
     "test": "node --test test/cron-expr.test.mjs test/window.test.mjs test/store.test.mjs test/scheduler.test.mjs test/tools.test.mjs",
-    "smoke": "node scripts/smoke-boot.mjs"
+    "smoke": "node scripts/smoke-boot.mjs",
+    "postinstall": "node scripts/link-dsh-closure.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

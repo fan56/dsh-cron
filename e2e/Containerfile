@@ -52,25 +52,13 @@ RUN npm install -g --no-fund --no-audit pnpm@${PNPM_VERSION} \
 # too). The bin is symlinked onto PATH and the closure is exposed through
 # DSH_CLOSURE_DIR for scripts/link-dsh-closure.mjs. run-e2e.sh falls back to
 # the other dist-tag when this layer fails on a broken wave.
+#
+# The generator is a single line with NO dollar signs on purpose: Dockerfile
+# ARG substitution is textual (it ignores shell quoting), so a JS template
+# literal like `@dsh@${ver}` would be blanked to `@dsh@` before node runs.
 RUN test -n "${DSH_VERSION}" \
       || (echo "DSH_VERSION build arg is required (e.g. --build-arg DSH_VERSION=0.1.5-rc.1)" >&2; exit 1) \
- && node -e '
-      const { execFileSync } = require("node:child_process")
-      const { writeFileSync, mkdirSync } = require("node:fs")
-      const [ver, dir] = process.argv.slice(1)
-      const deps = JSON.parse(execFileSync("npm", ["view", `@deepseek-ai/dsh@${ver}`, "dependencies", "--json"], { encoding: "utf8" }))
-      const overrides = {}
-      for (const [name, range] of Object.entries(deps ?? {})) {
-        if (name.startsWith("@deepseek-ai/") && /^[~^]/.test(range)) overrides[name] = range.replace(/^[~^]/, "")
-      }
-      mkdirSync(dir, { recursive: true })
-      writeFileSync(`${dir}/package.json`, JSON.stringify({
-        name: "dsh-e2e-install",
-        private: true,
-        dependencies: { "@deepseek-ai/dsh": ver },
-        overrides,
-      }, null, 2))
-    ' "${DSH_VERSION}" /opt/dsh-cli-install \
+ && node -e 'const cp=require("node:child_process");const fs=require("node:fs");const ver=process.argv[1],dir=process.argv[2];const deps=JSON.parse(cp.execFileSync("npm",["view","@deepseek-ai/dsh@"+ver,"dependencies","--json"],{encoding:"utf8"}));const overrides={};for(const entry of Object.entries(deps||{})){if(entry[0].startsWith("@deepseek-ai/")&&/^[~^]/.test(entry[1]))overrides[entry[0]]=entry[1].replace(/^[~^]/,"")}fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(dir+"/package.json",JSON.stringify({name:"dsh-e2e-install",private:true,dependencies:{"@deepseek-ai/dsh":ver},overrides:overrides},null,2))' "${DSH_VERSION}" /opt/dsh-cli-install \
  && npm install --prefix /opt/dsh-cli-install --no-fund --no-audit \
  && ln -sf /opt/dsh-cli-install/node_modules/.bin/dsh /usr/local/bin/dsh \
  && dsh --version

@@ -38,16 +38,38 @@ if [ -n "$RC" ] && [ "$(printf '%s\n' "$STABLE" "$RC" | sort -V | tail -1)" = "$
 fi
 printf '==> dsh closure: %s\n' "$DSH_VERSION"
 
-if [ "${CLEAN_NETWORK:-0}" = "1" ]; then
-  BUILD_ARGS=(--build-arg DSH_VERSION="$DSH_VERSION")
-else
-  BUILD_ARGS=(--build-arg BASE_IMAGE=docker.m.daocloud.io/library/ubuntu:24.04 \
-              --build-arg NODE_DIST_BASE=https://npmmirror.com/mirrors/node \
-              --build-arg DSH_VERSION="$DSH_VERSION")
+# The other dist-tag, used as the image-build fallback: an incomplete
+# upstream publish wave (a companion package missing from npm) fails the
+# Containerfile's pinned-closure install layer, and we rebuild against the
+# other end instead of failing the suite on upstream's breakage. Both ends
+# broken stays red — that is a real signal.
+ALT=""
+if [ "$DSH_VERSION" != "$STABLE" ]; then
+  ALT="$STABLE"
+elif [ -n "$RC" ] && [ "$RC" != "$DSH_VERSION" ]; then
+  ALT="$RC"
 fi
 
+# Builds the image for one dsh version. The args array is never empty at
+# expansion (bash 3.2 `set -u` safety, same rule as above).
+build_image() {
+  local args=(--build-arg DSH_VERSION="$1")
+  if [ "${CLEAN_NETWORK:-0}" != "1" ]; then
+    args+=(--build-arg BASE_IMAGE=docker.m.daocloud.io/library/ubuntu:24.04 \
+           --build-arg NODE_DIST_BASE=https://npmmirror.com/mirrors/node)
+  fi
+  "$ENGINE" build -f "$REPO_ROOT/e2e/Containerfile" -t "$IMAGE" "${args[@]}" "$REPO_ROOT"
+}
+
 printf '==> building image %s (context: %s, engine: %s)\n' "$IMAGE" "$REPO_ROOT" "$ENGINE"
-"$ENGINE" build -f "$REPO_ROOT/e2e/Containerfile" -t "$IMAGE" "${BUILD_ARGS[@]}" "$REPO_ROOT"
+if ! build_image "$DSH_VERSION"; then
+  if [ -z "$ALT" ]; then
+    printf 'run-e2e: dsh@%s image build failed and there is no other dist-tag to fall back to\n' "$DSH_VERSION" >&2
+    exit 1
+  fi
+  printf '==> dsh@%s build failed (incomplete upstream publish wave?) — retrying with %s\n' "$DSH_VERSION" "$ALT"
+  build_image "$ALT" || { printf 'run-e2e: neither %s nor %s builds\n' "$DSH_VERSION" "$ALT" >&2; exit 1; }
+fi
 
 printf '==> running scenario suite (all state stays inside the container)\n'
 "$ENGINE" run --rm --name dsh-cron-e2e \

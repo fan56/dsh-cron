@@ -38,16 +38,44 @@ RUN case "$(uname -m)" in \
       | tar -xJ -C /usr/local --strip-components=1 \
  && node --version
 
-# pnpm + the dsh CLI. The global dsh install must exist BEFORE the plugin
-# build: scripts/link-dsh-closure.mjs symlinks the @deepseek-ai/* closure
-# from the global dsh install into node_modules so tsc can resolve the
-# types (they are not on the public registry in a usable form).
+# pnpm first, alone: a broken upstream dsh publish wave must not take the
+# package manager down with it (the old combined install died on ETARGET and
+# left the image without pnpm — exit 127 at the plugin build).
+RUN npm install -g --no-fund --no-audit pnpm@${PNPM_VERSION} \
+ && pnpm --version
+
+# The dsh CLI installs into a scratch prefix as the publish wave's OWN
+# closure: every @deepseek-ai/* range the version declares is pinned to its
+# base version via npm overrides (same rationale as ci.yml — a caret range
+# like ^0.1.5-rc.2 FLOATS to a newer prerelease in the same tower, so one
+# incomplete upstream wave poisons plain installs of older complete versions
+# too). The bin is symlinked onto PATH and the closure is exposed through
+# DSH_CLOSURE_DIR for scripts/link-dsh-closure.mjs. run-e2e.sh falls back to
+# the other dist-tag when this layer fails on a broken wave.
 RUN test -n "${DSH_VERSION}" \
       || (echo "DSH_VERSION build arg is required (e.g. --build-arg DSH_VERSION=0.1.5-rc.1)" >&2; exit 1) \
- && npm install -g --no-fund --no-audit \
-      pnpm@${PNPM_VERSION} \
-      "@deepseek-ai/dsh@${DSH_VERSION}" \
- && dsh --version || true
+ && node -e '
+      const { execFileSync } = require("node:child_process")
+      const { writeFileSync, mkdirSync } = require("node:fs")
+      const [ver, dir] = process.argv.slice(1)
+      const deps = JSON.parse(execFileSync("npm", ["view", `@deepseek-ai/dsh@${ver}`, "dependencies", "--json"], { encoding: "utf8" }))
+      const overrides = {}
+      for (const [name, range] of Object.entries(deps ?? {})) {
+        if (name.startsWith("@deepseek-ai/") && /^[~^]/.test(range)) overrides[name] = range.replace(/^[~^]/, "")
+      }
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(`${dir}/package.json`, JSON.stringify({
+        name: "dsh-e2e-install",
+        private: true,
+        dependencies: { "@deepseek-ai/dsh": ver },
+        overrides,
+      }, null, 2))
+    ' "${DSH_VERSION}" /opt/dsh-cli-install \
+ && npm install --prefix /opt/dsh-cli-install --no-fund --no-audit \
+ && ln -sf /opt/dsh-cli-install/node_modules/.bin/dsh /usr/local/bin/dsh \
+ && dsh --version
+
+ENV DSH_CLOSURE_DIR=/opt/dsh-cli-install/node_modules/@deepseek-ai
 
 WORKDIR /app
 

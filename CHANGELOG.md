@@ -1,5 +1,15 @@
 # @aiwayds/dsh-cron
 
+## Unreleased
+
+### Changed
+- dsh closure 升至 0.1.7-rc.1（peer floors `>=0.1.7-rc.1`、dev pins exact、README support floor；cordis 4.0.4 / schemastery 3.18.4 随动）。
+- settings 迁到 0.1.7 新体系（`SettingsScope`/`register` 已删，编译所需）：`Config` schema 以模块级导出声明（四键全部 volatile），`apply(ctx, config)` 经 volatile 引用读值；ns 语义从旧命名空间 `cron` 变为 profile entry id `dsh-cron`——旧 settings.yaml 的 `cron:` 段不会自动迁移，原文留在 `settings.yaml.imported`。
+- 投递消息 source 从已删除的 `{ kind: 'plugin', plugin: 'cron' }` 改为 `{ kind: 'user' }`（0.1.7 消息源为 merge-extensible sum、无共享 plugin kind；与官方 dsh-acp 桥接外部 prompt 同款写法）。
+- `agent/created` 监听器按 0.1.7 串行契约显式返回 `undefined`（监听器抛错会回滚 agent 创建——工具注册路径未变，仍由 agent 本地 effect 承载）。
+- boot 链复核：rehydrate 为 `void …catch()` 异步不阻塞、tick 循环 `setInterval(…).unref()`——确认无阻塞点。
+- Plugin Manager 展示元数据：新增 icon.svg 与 locale/{en,zh}.json（`meta.title`/`meta.description`，官方 readPluginMeta 约定），package.json 声明 `icon` 并将两者入包。
+
 ## 0.3.0 (2026-09-11)
 
 ### Changed

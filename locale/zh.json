@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-cron",
+    "description": "定时调度：日历与间隔规则的有界任务，投递给在线 agent。"
+  }
+}

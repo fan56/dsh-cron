@@ -68,7 +68,7 @@ export interface HistoryEntry {
 	fires: FireRecord[];
 }
 
-/** Resolved plugin settings (the `cron` settings namespace). */
+/** Resolved plugin settings (the `dsh-cron` profile entry config). */
 export interface CronConfig {
 	/** Per-task fire-record retention; oldest evicted. Default 7. */
 	fireHistoryLimit: number;

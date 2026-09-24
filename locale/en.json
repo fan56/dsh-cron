@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-cron",
+    "description": "Cron scheduling: bounded tasks with calendar & interval rules, delivered to live agents."
+  }
+}

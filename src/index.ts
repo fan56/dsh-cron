@@ -3,13 +3,13 @@
  * plugin: bounded tasks with calendar (cron) and interval (every_seconds)
  * rules, delivered to live agents via followup or steer.
  *
- * Shape follows the ecosystem conventions: a schemastery settings namespace
- * (`cron`), tools registered on every runtime agent through the agent's own
- * tool context (ADR 0006 — no root filter; sub-agents already carry full
- * tool access, and boundedness is what contains risk), the /cron command
- * registered from the plugin itself through the shared dsh-commands registry
- * (optional peer, mounted via ctx.inject), zero npm dependencies in the
- * shipped artifact.
+ * Shape follows the ecosystem conventions: a schemastery Config schema
+ * (entry `dsh-cron` in the profile patch), tools registered on every runtime
+ * agent through the agent's own tool context (ADR 0006 — no root filter;
+ * sub-agents already carry full tool access, and boundedness is what contains
+ * risk), the /cron command registered from the plugin itself through the
+ * shared dsh-commands registry (optional peer, mounted via ctx.inject), zero
+ * npm dependencies in the shipped artifact.
  *
  * @module dsh-cron
  */
@@ -22,10 +22,9 @@ import { mkdirSync } from 'node:fs'
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only side-effect import: loads dsh-settings' `declare module
-// '@deepseek-ai/cordis'` augmentation, which is what puts `ctx.settings` on
-// the Context type. There is no runtime import — the host provides the
-// settings service; dsh-settings 0.1.2-alpha.3 removed the
-// settingsNamespace() helper this file used to import.
+// '@deepseek-ai/cordis'` augmentation, which is what puts `ctx.settings`
+// (a SettingsForms service since 0.1.7) on the Context type. There is no
+// runtime import — the host provides the settings service.
 import type {} from '@deepseek-ai/dsh-settings'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -42,24 +41,38 @@ export const name = 'dsh-cron'
 /** Services required before the engine can mount. */
 export const inject = ['settings', 'agents', 'tools']
 
-// dsh-settings 0.1.2-alpha.3 removed the runtime settingsNamespace() helper:
-// register() now brand-checks the namespace at the type level
-// (SettingsNamespaceInput) and validates the same lowercase-hyphenated
-// pattern at runtime via parseSettingsNamespace. A plain literal is the
-// supported spelling (same adaptation as dsh-model-sync).
-const OWN_NS = 'cron'
+// dsh 0.1.7 settings: the runtime namespace registry is gone. A plugin's
+// settings page is the projection of its `Config` schema (below) and the
+// namespace is the profile entry id — `dsh-cron` here (cordis.patch.yml).
+// A legacy top-level `cron:` section in settings.yaml is NOT auto-imported
+// under this id — the host renames the file to settings.yaml.imported after
+// the one-shot import.
 
-/** The `cron` settings namespace: user-editable in settings.yaml. */
-const CronSettings = z.object({
+/** The `dsh-cron` config entry: user-editable from the settings page
+ *  (volatile is the 0.1.7 contract for settings-page fields). */
+export const Config = z.object({
   /** Per-task fire-record retention; oldest evicted. Default 7. */
-  fireHistoryLimit: z.number().default(7),
+  fireHistoryLimit: z.number().default(7).volatile(),
   /** Archived-task FIFO cap for _history.json. Default 50. */
-  historyLimit: z.number().default(50),
+  historyLimit: z.number().default(50).volatile(),
   /** Tick loop period in ms. Default 15000. */
-  tickIntervalMs: z.number().default(15000),
+  tickIntervalMs: z.number().default(15000).volatile(),
   /** Storage directory override; empty = <dsh home>/storages/cron. */
-  storageDir: z.string().default(''),
+  storageDir: z.string().default('').volatile(),
 })
+
+/** Volatile Config fields arrive as live references; `.get()` snapshots the
+ *  current value (the host swaps references in-place on volatile updates). */
+interface VolatileRef<T> {
+  get(): T
+}
+
+export interface CronRuntimeConfig {
+  fireHistoryLimit: VolatileRef<number>
+  historyLimit: VolatileRef<number>
+  tickIntervalMs: VolatileRef<number>
+  storageDir: VolatileRef<string>
+}
 
 /** Structural slice of the live dsh agent runtime used for delivery. */
 interface RuntimeAgent {
@@ -68,9 +81,13 @@ interface RuntimeAgent {
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 }
 
-export function apply(ctx: Context): void {
-  const scope = ctx.settings.register(OWN_NS, CronSettings)
-  const cfgNow = (): CronConfig => scope.get() as unknown as CronConfig
+export function apply(ctx: Context, config: CronRuntimeConfig): void {
+  const cfgNow = (): CronConfig => ({
+    fireHistoryLimit: config.fireHistoryLimit.get(),
+    historyLimit: config.historyLimit.get(),
+    tickIntervalMs: config.tickIntervalMs.get(),
+    storageDir: config.storageDir.get(),
+  })
 
   const dir = resolveStorageDir(cfgNow().storageDir)
   const store = createTaskStore(dir)
@@ -84,9 +101,12 @@ export function apply(ctx: Context): void {
    */
   const deliver = async (target: AgentLike, text: string, policy: 'followup' | 'steer'): Promise<DeliveryOutcome> => {
     const runtime = target as unknown as RuntimeAgent
+    // 0.1.7 dropped the shared 'plugin' source kind (merge-extensible sum);
+    // external prompts ride 'user' — the same spelling the official dsh-acp
+    // bridge uses when delivering client prompts.
     const message = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'cron' },
+      source: { kind: 'user' },
     })
     if (policy === 'steer') {
       runtime.steer(message)
@@ -118,10 +138,12 @@ export function apply(ctx: Context): void {
 
   // Tools on every runtime agent (ADR 0006): the plugin does not apply
   // dsh-schedule's root filter, and the agent-local effect unwinds each
-  // registration when the agent is disposed.
+  // registration when the agent is disposed. The listener returns undefined
+  // to satisfy 0.1.7's serial agent/created contract.
   ctx.effect(() => {
     return ctx.on('agent/created', ({ agent }) => {
       agent.ctx.effect(() => registerCronTools(agent.ctx as unknown as ToolRegistrarContext, agent, engine))
+      return undefined
     })
   }, 'dsh-cron: agent tools')
 

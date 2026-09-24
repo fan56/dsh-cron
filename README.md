@@ -2,7 +2,7 @@
 
 Cron scheduling for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as an independent plugin: schedule prompts on standard cron expressions or fixed intervals and have them delivered to live agents — across TUI, web, and feishu surfaces.
 
-**Requires dsh >= 0.1.5-rc.2** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
+**Requires dsh >= 0.1.7-rc.1** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
 
 Design docs: [CONTEXT.md](./CONTEXT.md) (glossary) and [docs/adr/](./docs/adr) (decisions).
 
@@ -104,7 +104,14 @@ The npm tarball ships a `cron` skill (`skill/cron/SKILL.md`) that teaches the mo
 mkdir -p $DSH_HOME/skills && cp -r <package>/skill/cron $DSH_HOME/skills/
 ```
 
-### Settings (`cron` namespace in settings.yaml)
+### Settings (`dsh-cron` entry in the profile patch)
+
+Since dsh 0.1.7 the legacy `settings.yaml` is imported once at boot and renamed
+`settings.yaml.imported`; plugin settings live in the profile patch
+(`~/.dsh/profiles/<profile>/cordis.patch.yml`) under the `dsh-cron` entry. All
+four keys are volatile (settings-page editable, live where the engine reads
+them per tick); `storageDir` and `tickIntervalMs` are read at plugin mount, so
+changes there apply after a restart.
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
@@ -112,6 +119,11 @@ mkdir -p $DSH_HOME/skills && cp -r <package>/skill/cron $DSH_HOME/skills/
 | `historyLimit` | 50 | Archived tasks kept in `_history.json`. |
 | `tickIntervalMs` | 15000 | Scheduler tick period. |
 | `storageDir` | — | Storage override; empty = `<dsh home>/storages/cron`. |
+
+A pre-upgrade top-level `cron:` section in `settings.yaml` does not migrate
+automatically (the entry id is `dsh-cron`) — the original lines survive in
+`settings.yaml.imported`; re-enter them in the profile patch or the settings
+page.
 
 ## Limitations
 

@@ -12,14 +12,19 @@ rm -rf "$DSH_HOME_DIR"
 mkdir -p "$PROFILE_DIR"
 
 # Rolling resolution, same policy as ci.yml: never hand-pin the dsh closure.
-TUI_VERSION="$(npm view @aiwayds/dsh-tui-pi version)"
+# Official registry explicitly — the container default (npmmirror) syncs
+# @aiwayds releases minutes-to-hours late, and this canary is meaningless
+# against a stale tui-pi (it booted 2.22.0 — pre-footer-fix — as "^2.22.0"
+# and failed the exact assertion the fix closes).
+NPM_REG="https://registry.npmjs.org"
+TUI_VERSION="$(npm view @aiwayds/dsh-tui-pi version --registry="$NPM_REG")"
 printf '  dsh-tui-pi: %s | dsh: %s\n' "$TUI_VERSION" "$(dsh --version 2>/dev/null || echo '?')"
 # Canary override: a locally packed dsh-tui-pi tarball dropped into the
 # mounted e2e tree (e2e/dist-tui/*.tgz, untracked build artifact) wins over
-# the rolling npm version. The footer-seed fix this suite canaries is
-# unreleased — without the override the container would boot the published
-# eager seed and the import-path assertion could only stay red. Absent the
-# directory (CI, other machines) the rolling rule above is untouched.
+# the rolling npm version — for iterating on a footer-seed fix before it
+# publishes. Absent the directory (CI, other machines) the rolling rule
+# above is untouched; since 2.23.0 the rolling version carries the deferred
+# seed and the import-path assertion guards it permanently.
 TUI_DEP="^$TUI_VERSION"
 LOCAL_TUI="$(ls /e2e/dist-tui/*.tgz 2>/dev/null | head -1 || true)"
 if [ -n "$LOCAL_TUI" ]; then
@@ -48,6 +53,8 @@ packages:
 nodeLinker: hoisted
 autoInstallPeers: false
 EOF
+# Same official-registry rule for the install itself (pnpm reads .npmrc).
+printf 'registry=%s\n' "$NPM_REG" > "$PROFILE_DIR/.npmrc"
 
 TARBALL="$(ls /dist/*.tgz | head -1)"
 cat > "$PROFILE_DIR/package.json" <<EOF

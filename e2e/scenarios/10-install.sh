@@ -14,13 +14,34 @@ mkdir -p "$PROFILE_DIR"
 # Rolling resolution, same policy as ci.yml: never hand-pin the dsh closure.
 TUI_VERSION="$(npm view @aiwayds/dsh-tui-pi version)"
 printf '  dsh-tui-pi: %s | dsh: %s\n' "$TUI_VERSION" "$(dsh --version 2>/dev/null || echo '?')"
+# Canary override: a locally packed dsh-tui-pi tarball dropped into the
+# mounted e2e tree (e2e/dist-tui/*.tgz, untracked build artifact) wins over
+# the rolling npm version. The footer-seed fix this suite canaries is
+# unreleased — without the override the container would boot the published
+# eager seed and the import-path assertion could only stay red. Absent the
+# directory (CI, other machines) the rolling rule above is untouched.
+TUI_DEP="^$TUI_VERSION"
+LOCAL_TUI="$(ls /e2e/dist-tui/*.tgz 2>/dev/null | head -1 || true)"
+if [ -n "$LOCAL_TUI" ]; then
+  TUI_DEP="file:$LOCAL_TUI"
+  printf '  dsh-tui-pi: local canary tarball %s\n' "$LOCAL_TUI"
+fi
 
 cat > "$PROFILE_DIR/cordis.yml" <<'EOF'
 # e2e profile root — the tree is composed from the bundle patches
 []
 EOF
-# cordis.patch.yml is written further below (mock providers + default model
-# + the 1s tick), once the profile directory is fully in place.
+# Profile patch — ONLY the dsh-cron tick entry (the 1s loop floor in
+# src/index.ts) so 60s occurrences fire predictably. The tick must live in
+# the patch: a legacy `cron:` yaml section no longer reaches the plugin under
+# the 0.1.7 entry-id settings namespace (`dsh-cron`), which the settings
+# import does not translate — that one block stays in native patch form.
+cat > "$PROFILE_DIR/cordis.patch.yml" <<'EOF'
+- id: dsh-cron
+  name: "@aiwayds/dsh-cron"
+  config:
+    tickIntervalMs: 1000
+EOF
 cat > "$PROFILE_DIR/pnpm-workspace.yaml" <<'EOF'
 packages:
   - .
@@ -35,7 +56,7 @@ cat > "$PROFILE_DIR/package.json" <<EOF
   "private": true,
   "dependencies": {
     "@aiwayds/dsh-cron": "file:$TARBALL",
-    "@aiwayds/dsh-tui-pi": "^$TUI_VERSION"
+    "@aiwayds/dsh-tui-pi": "$TUI_DEP"
   },
   "dsh": {
     "profile": {
@@ -49,58 +70,46 @@ cat > "$PROFILE_DIR/package.json" <<EOF
 }
 EOF
 
-# Profile patch (the 0.1.7-native config surface): the mock provider route
-# lives under the llm-pi-ai entry (dsh-llm-pi-ai installs its `providers` dict
-# there), the default model selection under agent-default-model, and the 1s
-# tick loop (floor in src/index.ts) under the dsh-cron entry so 60s
-# occurrences fire predictably.
-#
-# Why the patch instead of the legacy settings.yaml: dsh 0.1.7 boots a cold
-# home by importing settings.yaml into the profile patch once and then
-# renaming it away — on the 0.1.7-rc.1 host that import races the TUI's
-# initial footer seed (the footer fell back to the host builtin default and
-# the 20-boot assertion flaked red on BOTH cron 0.3.0 and the migrated tree;
-# proven in-container 2026-09-24). Writing the patch directly removes the
-# race entirely, and a legacy `cron:` yaml section would no longer reach the
-# plugin anyway — the 0.1.7 settings namespace is the profile entry id
-# `dsh-cron`, which the bundle patch below mounts explicitly.
-cat > "$PROFILE_DIR/cordis.patch.yml" <<'EOF'
-- id: llm-pi-ai
-  name: "@deepseek-ai/dsh-llm-pi-ai"
-  config:
-    providers:
-      mock:
-        displayName: Mock LLM
-        api: openai-completions
-        baseURL: http://127.0.0.1:8899/v1
-        apiKeyEnv: MOCK_API_KEY
-        models:
-          - id: mock-flash
-            name: Mock Flash
-            contextWindow: 200000
-            maxTokens: 8192
-      # The subagent runtime dispatches child LLM calls through the "spawn"
-      # provider route (dsh-subagent-spawn-in-process); without it every
-      # sub-agent execution fails and sub-agent fires stall as delivered.
-      spawn:
-        displayName: Mock Spawn
-        api: openai-completions
-        baseURL: http://127.0.0.1:8899/v1
-        apiKeyEnv: MOCK_API_KEY
-        models:
-          - id: mock-flash
-            name: Mock Flash
-            contextWindow: 200000
-            maxTokens: 8192
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: mock
-    model: mock-flash
-- id: dsh-cron
-  name: "@aiwayds/dsh-cron"
-  config:
-    tickIntervalMs: 1000
+# settings.yaml — the mock provider route and the default model selection,
+# deliberately restored to the LEGACY settings.yaml form (revert of the
+# 79c733f bypass): dsh 0.1.7 boots a cold home by importing settings.yaml
+# into the profile patch once, and this scenario is the canary that keeps
+# that import path covered. The 0.1.7-rc.1 race that forced the bypass
+# (import landing after the TUI's eager footer seed froze the builtin
+# default) is fixed dsh-tui-pi-side: the footer seed defers to
+# settings/document-updated, so the composed default fills in once the
+# import lands. The tick stays in cordis.patch.yml above — a `cron:` section
+# in entry-id form is not imported.
+mkdir -p "$DSH_HOME_DIR"
+cat > "$DSH_HOME_DIR/settings.yaml" <<'EOF'
+llm-pi-ai:
+  providers:
+    mock:
+      displayName: Mock LLM
+      api: openai-completions
+      baseURL: http://127.0.0.1:8899/v1
+      apiKeyEnv: MOCK_API_KEY
+      models:
+        - id: mock-flash
+          name: Mock Flash
+          contextWindow: 200000
+          maxTokens: 8192
+    # The subagent runtime dispatches child LLM calls through the "spawn"
+    # provider route (dsh-subagent-spawn-in-process); without it every
+    # sub-agent execution fails and sub-agent fires stall as delivered.
+    spawn:
+      displayName: Mock Spawn
+      api: openai-completions
+      baseURL: http://127.0.0.1:8899/v1
+      apiKeyEnv: MOCK_API_KEY
+      models:
+        - id: mock-flash
+          name: Mock Flash
+          contextWindow: 200000
+          maxTokens: 8192
+agent-default-model:
+  provider: mock
+  model: mock-flash
 EOF
 
 if pnpm --dir "$PROFILE_DIR" install --silent; then

@@ -20,7 +20,6 @@ import { mkdirSync } from 'node:fs'
 // Types only (erased at emit); dsh-commands is an optional peer, so hosts
 // without it still load this plugin — see the guarded registration below.
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only side-effect import: loads dsh-settings' `declare module
 // '@deepseek-ai/cordis'` augmentation, which is what puts `ctx.settings`
 // (a SettingsForms service since 0.1.7) on the Context type. There is no
@@ -35,7 +34,30 @@ import { createHistoryStore, createTaskStore } from './store.ts'
 import { registerCronTools, type ToolRegistrarContext } from './tools.ts'
 import { defaultCronDir, resolveDshHome } from './paths.ts'
 import { runLegacySettingsImport, type LegacyImportLogger, type SettingsUpdateSeam } from './legacy-import.ts'
+import { cronFireMessage } from './fire-message.ts'
 import { systemClock, type CronConfig, type CronTask } from './types.ts'
+
+// ---------------------------------------------------------------------------
+// Producer message source (0.1.7 merge-extensible `MessageSourceMap`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable attribution for cron fire deliveries. Consumers that switch on
+ * `kind`—for example dsh-approval-policy's unattended approval gate—can
+ * classify cron-driven turns instead of confusing them with a human user.
+ * dsh 0.1.7 removed the shared `plugin` kind: every producer declares its own
+ * kind through the merge-extensible `MessageSourceMap`; consumers fall through
+ * unknown kinds by contract.
+ */
+export interface CronFireMessageSource {
+  readonly kind: 'cron'
+}
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    cron: CronFireMessageSource
+  }
+}
 
 export const name = 'dsh-cron'
 
@@ -103,13 +125,8 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
    */
   const deliver = async (target: AgentLike, text: string, policy: 'followup' | 'steer'): Promise<DeliveryOutcome> => {
     const runtime = target as unknown as RuntimeAgent
-    // 0.1.7 dropped the shared 'plugin' source kind (merge-extensible sum);
-    // external prompts ride 'user' — the same spelling the official dsh-acp
-    // bridge uses when delivering client prompts.
-    const message = createUserMessage({
-      content: [{ type: 'text', text }],
-      source: { kind: 'user' },
-    })
+    // 自有 kind 'cron'：为定时触发投递保留 durable attribution（见 fire-message.ts）。
+    const message = cronFireMessage(text)
     if (policy === 'steer') {
       runtime.steer(message)
       return 'delivered'

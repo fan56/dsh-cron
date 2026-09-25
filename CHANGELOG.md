@@ -12,6 +12,7 @@
 - Plugin Manager 展示元数据：新增 icon.svg 与 locale/{en,zh}.json（`meta.title`/`meta.description`，官方 readPluginMeta 约定），package.json 声明 `icon` 并将两者入包。
 - e2e 配置面迁到 0.1.7 原生形态（10-install 直写 profile patch）：旧 settings.yaml 写法在 0.1.7-rc.1 宿主上与 TUI 冷启 footer seed 存在导入竞态——首启导入完成前 footer 回落宿主内置默认模型，20-boot 的 mock provider 断言在 0.3.0 与迁移树上同样翻红（容器内对照实验定谳：patch 直写即刻恢复 mock 显示）；且旧 `cron:` 段在 Config/entry-id 形态下不再自动导入，tick 1000ms 提速本已失效。mock providers / agent-default-model / dsh-cron tick 三块现都写进 profile 的 cordis.patch.yml。
 - e2e 恢复 settings.yaml 导入路径作金丝雀（10-install）：dsh-tui-pi 侧已修复冷启 footer seed 竞态（footer seed 延迟到 settings/document-updated，导入落地后组合默认值补上），mock providers 与 agent-default-model 两块改回 settings.yaml 写法以持续覆盖 0.1.7 首启导入；dsh-cron tick 提速仍留在 profile patch（旧 `cron:` 段 entry-id 形态不导入）。
+- 投递消息 source 从 `{ kind: 'user' }` 改为自有 kind `'cron'`（MessageSourceMap 声明于 fire-message.ts）——为下游按 turn 源分类留出 durable 标记（首个消费者 @aiwayds/dsh-approval-policy 的无人值守审批门控）；旧 kind 与人手敲无法区分。
 
 ## 0.3.0 (2026-09-11)
 

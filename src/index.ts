@@ -33,7 +33,8 @@ import { CronEngine, type AgentLike, type DeliveryOutcome } from './scheduler.ts
 import { nextOccurrence } from './rule.ts'
 import { createHistoryStore, createTaskStore } from './store.ts'
 import { registerCronTools, type ToolRegistrarContext } from './tools.ts'
-import { defaultCronDir } from './paths.ts'
+import { defaultCronDir, resolveDshHome } from './paths.ts'
+import { runLegacySettingsImport, type LegacyImportLogger, type SettingsUpdateSeam } from './legacy-import.ts'
 import { systemClock, type CronConfig, type CronTask } from './types.ts'
 
 export const name = 'dsh-cron'
@@ -44,9 +45,10 @@ export const inject = ['settings', 'agents', 'tools']
 // dsh 0.1.7 settings: the runtime namespace registry is gone. A plugin's
 // settings page is the projection of its `Config` schema (below) and the
 // namespace is the profile entry id — `dsh-cron` here (cordis.patch.yml).
-// A legacy top-level `cron:` section in settings.yaml is NOT auto-imported
-// under this id — the host renames the file to settings.yaml.imported after
-// the one-shot import.
+// The host renames a legacy settings.yaml to settings.yaml.imported after its
+// one-shot import keyed by "section name = entry id" — the old top-level
+// `cron:` section does NOT match and is silently dropped by the host;
+// legacy-import.ts recovers it once at boot (see the end of apply()).
 
 /** The `dsh-cron` config entry: user-editable from the settings page
  *  (volatile is the 0.1.7 contract for settings-page fields). */
@@ -81,7 +83,7 @@ interface RuntimeAgent {
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 }
 
-export function apply(ctx: Context, config: CronRuntimeConfig): void {
+export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<void> {
   const cfgNow = (): CronConfig => ({
     fireHistoryLimit: config.fireHistoryLimit.get(),
     historyLimit: config.historyLimit.get(),
@@ -323,6 +325,27 @@ export function apply(ctx: Context, config: CronRuntimeConfig): void {
       })
       .join('\n\n')
     return ok(`最近 ${entries.length} 条归档（上限 ${cfgNow().historyLimit}）：\n\n${body}`)
+  }
+
+  // ---- One-time legacy settings import (0.1.5 → 0.1.7 upgrade path) ----
+  // The 0.1.7 host imports the old settings.yaml ONCE by "section name =
+  // entry id" and renames it settings.yaml.imported — this plugin's legacy
+  // section was named `cron`, so the host's import silently dropped it.
+  // Recover it here (see legacy-import.ts). Awaited as apply()'s LAST step:
+  // every registration above stays synchronous, while a real boot — whose
+  // loader awaits the fiber setup — also settles the import before activation
+  // completes. Fully contained: any failure only warns and leaves the audit
+  // marker unwritten, so the next boot retries; activation never depends
+  // on this.
+  try {
+    await runLegacySettingsImport({
+      home: resolveDshHome(),
+      settings: ctx.settings as unknown as SettingsUpdateSeam,
+      logger: (ctx as unknown as { logger?: LegacyImportLogger }).logger,
+      getCurrent: (key) => cfgNow()[key],
+    })
+  } catch (error) {
+    ctx.logger.warn(`dsh-cron 旧 settings 迁移失败（不影响启动，下次启动重试）：${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

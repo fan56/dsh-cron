@@ -4,7 +4,8 @@
 
 ### Changed
 - dsh closure 升至 0.1.7-rc.1（peer floors `>=0.1.7-rc.1`、dev pins exact、README support floor；cordis 4.0.4 / schemastery 3.18.4 随动）。
-- settings 迁到 0.1.7 新体系（`SettingsScope`/`register` 已删，编译所需）：`Config` schema 以模块级导出声明（四键全部 volatile），`apply(ctx, config)` 经 volatile 引用读值；ns 语义从旧命名空间 `cron` 变为 profile entry id `dsh-cron`——旧 settings.yaml 的 `cron:` 段不会自动迁移，原文留在 `settings.yaml.imported`。
+- settings 迁到 0.1.7 新体系（`SettingsScope`/`register` 已删，编译所需）：`Config` schema 以模块级导出声明（四键全部 volatile），`apply(ctx, config)` 经 volatile 引用读值；ns 语义从旧命名空间 `cron` 变为 profile entry id `dsh-cron`——旧 settings.yaml 的 `cron:` 段被宿主一次性导入静默丢弃（自动迁移见下条），原文留在 `settings.yaml.imported`。
+- **旧 settings 段一次性自动迁移（0.1.5→0.1.7 升级无感知）**：宿主把旧 settings.yaml 按「section 名 = entry id」一次性导入并改名 `settings.yaml.imported`，而本插件旧段名是 `cron` ≠ entry id `dsh-cron`——用户的旧配置被静默丢弃。新增 `src/legacy-import.ts`：boot 时读 `settings.yaml.imported`（兜底 `settings.yaml`）的 `cron:` 平铺段（纯函数解析器：只收直接子级标量，剥引号、number/boolean 推断、单行引号包裹的流式 JSON 解析；嵌套块/折叠值保守跳过），仅把「旧值 ≠ 当前生效值」（volatile ref `.get()` 读）的键经 `ctx.settings.update('dsh-cron', patch)` 写回，成功后落审计档 `<home>/storages/dsh-cron/legacy-import.json`（`{at, outcome, source, imported, skipped}`，outcome 含 imported/no-op/no-legacy/no-section）——marker 已存在则整个迁移跳过（幂等防复活）；update 失败不写 marker 下次 boot 重试；settings seam 不可用不读不写；全程 try/catch 只 warn，绝不影响激活。`apply()` 改为 async（import 位于函数体末尾，其上全部注册保持同步；cordis 将返回的 promise 作为 setup barrier 等待）。测试 +18（`legacy-import.test.mjs`：解析器纯函数 7 例 + fake-seam 导入逻辑 11 例）。
 - 投递消息 source 从已删除的 `{ kind: 'plugin', plugin: 'cron' }` 改为 `{ kind: 'user' }`（0.1.7 消息源为 merge-extensible sum、无共享 plugin kind；与官方 dsh-acp 桥接外部 prompt 同款写法）。
 - `agent/created` 监听器按 0.1.7 串行契约显式返回 `undefined`（监听器抛错会回滚 agent 创建——工具注册路径未变，仍由 agent 本地 effect 承载）。
 - boot 链复核：rehydrate 为 `void …catch()` 异步不阻塞、tick 循环 `setInterval(…).unref()`——确认无阻塞点。

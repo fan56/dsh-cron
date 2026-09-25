@@ -120,10 +120,14 @@ changes there apply after a restart.
 | `tickIntervalMs` | 15000 | Scheduler tick period. |
 | `storageDir` | — | Storage override; empty = `<dsh home>/storages/cron`. |
 
-A pre-upgrade top-level `cron:` section in `settings.yaml` does not migrate
-automatically (the entry id is `dsh-cron`) — the original lines survive in
-`settings.yaml.imported`; re-enter them in the profile patch or the settings
-page.
+Upgrading from a pre-0.1.7 install: a top-level `cron:` section in the old
+`settings.yaml` (which the host renames to `settings.yaml.imported` after its
+one-shot import — the section name does not match this plugin's entry id) is
+migrated ONCE at the next plugin boot. Keys whose legacy value differs from the
+current effective value are written into the `dsh-cron` entry automatically;
+the pass is recorded in the audit marker
+`<dsh home>/storages/dsh-cron/legacy-import.json` (a present marker means the
+migration never re-runs; a failed write retries on the next boot).
 
 ## Limitations
 
@@ -143,6 +147,7 @@ src/
   framing.ts      [CRON FIRE] model framing (injection-resistant)
   tools.ts        cron_create / cron_list / cron_delete / cron_report
   store.ts        per-id JSON task store + capped history (atomic writes)
+  legacy-import.ts one-time `cron:` section migration (0.1.5 → 0.1.7) + audit marker
   types.ts        data model and clock seam
   paths.ts        dsh home resolution
 test/             unit suites over the compiled lib (fake clocks/agents)

@@ -2,13 +2,15 @@
 
 Cron scheduling for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as an independent plugin: schedule prompts on standard cron expressions or fixed intervals and have them delivered to live agents — across TUI, web, and feishu surfaces.
 
-**Requires dsh >= 0.1.7-rc.1** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
+**Requires dsh >= 0.2.0-rc.2** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
 
 Design docs: [CONTEXT.md](./CONTEXT.md) (glossary) and [docs/adr/](./docs/adr) (decisions).
 
 ## Why not dsh-schedule?
 
 `@deepseek-ai/dsh-schedule` provides session-scoped reminders (`after` / `at` / `every_seconds ≥ 5min`) that only fire while the original session stays live, and its protocol explicitly excludes cron expressions. dsh-cron is the complement: **profile-anchored recurring tasks** — a fire lands in whichever live root agent exists, regardless of which surface the session belongs to.
+
+As of **dsh 0.2.0, the official automation schedule ships as an OPTIONAL_BUNDLE that is disabled by default** — after upgrading, existing official scheduled tasks silently stop firing until you manually opt in (and the official time-context feature goes dark with it). dsh-cron is unaffected by that switch: it is an **independent, always-resident scheduling plugin** that registers its own cordis plugin and clock, with no dependency on the official bundle — out of the box on every profile it is installed in, no opt-in required. If you relied on official scheduled tasks and do not want to hunt for a hidden settings toggle after each host upgrade, dsh-cron is the always-on alternative; the two can also coexist, since their scopes do not overlap (session-bound reminders vs profile-anchored cron).
 
 ## Core properties
 

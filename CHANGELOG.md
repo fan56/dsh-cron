@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- **The published tarball is npm-installable** — `postinstall` runs `node scripts/link-dsh-closure.mjs`, but the `files` allow-list never shipped `scripts/`, so every non-link install (plugin manager, plain `npm install`) died in the lifecycle step with `MODULE_NOT_FOUND` — the same defect class as fan56/dsh-subagent-registry#2. `scripts/` now ships, and the linker's stand-down guard swapped the fragile marker check for `tsconfig.json` + `.git`. `test/packaged-install.test.mjs` packs, installs the tarball under npm with lifecycle scripts on, and asserts the linker stood down; the boot smoke installs via npm for the same reason and asserts the stand-down against the real host.
+
+
 ### Changed
 - **dsh host floor 抬至 0.2.0-rc.2**：peer floors `>=0.2.0-rc.2`、dev pins exact `0.2.0-rc.2`（README support floor 随动）。零代码变更：`MessageSourceMap{cron}` 契约在 0.2.0 不变（单元测试 7 文件 55 例全绿 + `tsc --noEmit` 对 0.2.0-rc.2 闭包零错）。cron 容器 e2e 本波跳过（零代码变更记档）。
 - **README 定位口径更新（docs-only）**：官方 dsh 0.2.0 把官方自动化 schedule 变成 OPTIONAL_BUNDLE 默认关闭——升级后既有官方定时任务静默停摆，须手动开启；"Why not dsh-schedule?" 节补一段差异化：dsh-cron 是独立常驻的定时任务插件，注册自有 cordis 插件与时钟、不依赖官方 bundle，安装即生效（开箱即用 vs 官方默认关），两者作用域不重叠（session 级提醒 vs profile 级 cron）可共存。不发版。

@@ -67,6 +67,16 @@ writeFileSync(path.join(profile, 'package.json'), JSON.stringify({
   },
 }, null, 2) + '\n')
 
+// Peer auto-install OFF: the host closure supplies every @deepseek-ai row.
+// npm would otherwise auto-install the hard peers at the best version its
+// semver can pick (`>=0.2.0-rc.2` resolves 0.2.0-rc.2 — a prerelease of a
+// different tuple never satisfies a plain range), and those foreign-tower
+// copies shadow the host's bundled closure; the host's compat gate then
+// disables the shadowed rows and a required plugin never activates — exactly
+// the failure mode the optional-peer contract exists for. Lifecycle scripts
+// stay ON below (the consumer-path regression this install is here for).
+writeFileSync(path.join(profile, '.npmrc'), 'legacy-peer-deps=true\n')
+
 const install = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: profile, encoding: 'utf8' })
 if (install.status !== 0 || install.error) fail('npm install in the scratch profile failed (lifecycle scripts on — the consumer path)', `${install.stdout}\n${install.stderr}`)
 

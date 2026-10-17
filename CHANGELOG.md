@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **0.2.1-rc.2 wave**: devDeps `@deepseek-ai/*` pins `0.2.0-rc.2` → `0.2.1-rc.2` (pnpm lockfile advanced; peer floors unchanged — pre-flight `includePrerelease` already matches 0.2.1-rc.2), CI closure tower restored to newest-of(latest,next) with a prerelease-aware compare (10-17 pin undone); boot-smoke fix: the scratch consumer profile now disables npm peer auto-install (`legacy-peer-deps=true`) so foreign-tower `@deepseek-ai` copies cannot shadow the host closure — on a 0.2.1-rc.2 host npm resolved the hard `>=0.2.0-rc.2` peers to `0.2.0-rc.2`, the host compat gate disabled the shadowed rows and a required plugin never activated (the failure mode the optional-peer contract exists for); verified against a 0.2.1-rc.2 closure: typecheck clean, 55/0 test assertions + packaged-install pass, boot smoke pass.
+
 ### Fixed
 - **The published tarball is npm-installable** — `postinstall` runs `node scripts/link-dsh-closure.mjs`, but the `files` allow-list never shipped `scripts/`, so every non-link install (plugin manager, plain `npm install`) died in the lifecycle step with `MODULE_NOT_FOUND` — the same defect class as fan56/dsh-subagent-registry#2. `scripts/` now ships, and the linker's stand-down guard swapped the fragile marker check for `tsconfig.json` + `.git`. `test/packaged-install.test.mjs` packs, installs the tarball under npm with lifecycle scripts on, and asserts the linker stood down; the boot smoke installs via npm for the same reason and asserts the stand-down against the real host.
 

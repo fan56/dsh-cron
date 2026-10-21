@@ -1,5 +1,5 @@
 ---
-name: cron
+name: dsh-cron-config
 description: Schedule bounded recurring or one-shot tasks with cron_create — interval polling (每 10 分钟检查一次), calendar rules (每天 9 点/每周一/工作日), deployment monitors that stop on success/failure, and mid-turn watchdogs (卡死检测/上下文守卫). Use when the user says 定时任务、cron、每 N 分钟、每天几点、到点自动跑、监控直到成功、watchdog, or wants work to happen later. Not for within-this-session reminders of a few minutes (that is dsh-schedule's after/at). Every task is bound to one session — this one by default, or a dedicated new one; never delivered globally.
 ---
 

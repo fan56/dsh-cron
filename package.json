@@ -1,6 +1,6 @@
 {
   "name": "@aiwayds/dsh-cron",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "dsh plugin: cron scheduling — bounded tasks with calendar & interval rules, delivered to live agents",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "pretest": "tsc -p tsconfig.json",
-    "test": "node --test test/cron-expr.test.mjs test/window.test.mjs test/store.test.mjs test/scheduler.test.mjs test/tools.test.mjs test/attach.test.mjs test/legacy-import.test.mjs test/message-source.test.mjs && node test/packaged-install.test.mjs",
+    "test": "node --test test/cron-expr.test.mjs test/window.test.mjs test/store.test.mjs test/scheduler.test.mjs test/tools.test.mjs test/attach.test.mjs test/skill.test.mjs test/legacy-import.test.mjs test/message-source.test.mjs && node test/packaged-install.test.mjs",
     "smoke": "node scripts/smoke-boot.mjs",
     "postinstall": "node scripts/link-dsh-closure.mjs"
   },

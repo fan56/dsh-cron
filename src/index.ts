@@ -17,6 +17,8 @@
 
 import { resolve } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 
 // Types only (erased at emit); dsh-commands is an optional peer, so hosts
 // without it still load this plugin — see the guarded registration below.
@@ -33,6 +35,11 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-workspace/types'
 import type { Context } from '@deepseek-ai/cordis'
+// Types only (erased at emit): dsh-skill's published lib imports host-closure
+// siblings (dsh-scope, dsh-llm) that a plugin repo's own graph does not carry,
+// so the runtime service comes from the host and these types only shape the
+// provider object handed to ctx.skills.registerProvider.
+import type { SkillCandidate, SkillDefinition, SkillProvider } from '@deepseek-ai/dsh-skill'
 import z from '@deepseek-ai/schemastery'
 
 import { CronEngine, type AgentLike, type DeliveryOutcome } from './scheduler.ts'
@@ -85,7 +92,91 @@ declare module '@deepseek-ai/dsh-workspace/types' {
 export const name = 'dsh-cron'
 
 /** Services required before the engine can mount. */
-export const inject = ['settings', 'agents', 'tools']
+export const inject = ['settings', 'agents', 'tools', 'skills']
+
+// ---------------------------------------------------------------------------
+// Bundled skill (default install)
+// ---------------------------------------------------------------------------
+
+/**
+ * The usage/config guide ships inside the package and mounts through the
+ * host's `ctx.skills` provider registry at boot — installing the plugin is
+ * the skill install; no file copy into `$DSH_HOME/skills` and no uninstall
+ * residue. Type-only dsh-skill import: see the note at the top of this file.
+ */
+
+/** Mirrors dsh-skill's bundled-skill rank (hardcoded there too; ordering hint only). */
+const BUNDLED_SKILL_RANK = 600
+
+/** Provider name under `ctx.skills`; doubles as the skill name. */
+const SKILL_PROVIDER_NAME = 'dsh-cron-config'
+
+/** Packaged skill body; `../skill/` resolves to the package root from lib/. */
+const SKILL_BODY_URL = new URL('../skill/dsh-cron-config/SKILL.md', import.meta.url)
+
+/** Resource base served with the skill so its relative links resolve. */
+const SKILL_RESOURCE_BASE = {
+  kind: 'directory',
+  path: fileURLToPath(new URL('../skill/dsh-cron-config/', import.meta.url)),
+} as const
+
+const SKILL_INVOCATION = { modelInvocable: true, userInvocable: true } as const
+
+/** Routing description; must stay identical to the SKILL.md frontmatter (asserted in tests). */
+const SKILL_DESCRIPTION =
+  'Schedule bounded recurring or one-shot tasks with cron_create — interval polling (每 10 分钟检查一次), calendar rules (每天 9 点/每周一/工作日), deployment monitors that stop on success/failure, and mid-turn watchdogs (卡死检测/上下文守卫). Use when the user says 定时任务、cron、每 N 分钟、每天几点、到点自动跑、监控直到成功、watchdog, or wants work to happen later. Not for within-this-session reminders of a few minutes (that is dsh-schedule\'s after/at). Every task is bound to one session — this one by default, or a dedicated new one; never delivered globally.'
+
+const SKILL_CANDIDATE: SkillCandidate = {
+  name: SKILL_PROVIDER_NAME,
+  description: SKILL_DESCRIPTION,
+  invocation: SKILL_INVOCATION,
+  provider: SKILL_PROVIDER_NAME,
+  source: 'bundled',
+  resourceBase: SKILL_RESOURCE_BASE,
+  rank: BUNDLED_SKILL_RANK,
+  locator: SKILL_BODY_URL,
+}
+
+const skillProvider: SkillProvider = {
+  name: SKILL_PROVIDER_NAME,
+  list: () => Promise.resolve([SKILL_CANDIDATE]),
+  async get(_candidate): Promise<SkillDefinition> {
+    return {
+      name: SKILL_CANDIDATE.name,
+      description: SKILL_CANDIDATE.description,
+      invocation: SKILL_CANDIDATE.invocation,
+      provider: SKILL_CANDIDATE.provider,
+      source: SKILL_CANDIDATE.source,
+      resourceBase: SKILL_RESOURCE_BASE,
+      content: stripFrontmatter(await readFile(SKILL_BODY_URL, 'utf8')),
+    }
+  },
+}
+
+/**
+ * Strip a leading YAML frontmatter block (`---` / body / `---`) from a skill
+ * markdown file. `SkillDefinition.content` must be the instruction body after
+ * metadata removal — the same shape the filesystem provider serves — so the
+ * bundled SKILL.md, which keeps its frontmatter for the GitHub/manual install
+ * paths, has the block removed when served through {@link skillProvider.get}.
+ * Tolerant by design: input that does not open with a `---` line, or whose
+ * frontmatter block is never closed, is returned unchanged.
+ */
+export function stripFrontmatter(raw: string): string {
+  const firstLineEnd = raw.indexOf('\n')
+  if (firstLineEnd < 0 || raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return raw
+  let lineStart = firstLineEnd + 1
+  while (lineStart <= raw.length) {
+    const nextNewline = raw.indexOf('\n', lineStart)
+    const lineEnd = nextNewline < 0 ? raw.length : nextNewline
+    if (raw.slice(lineStart, lineEnd).replace(/\r$/, '') === '---') {
+      return raw.slice(nextNewline < 0 ? raw.length : nextNewline + 1).trim()
+    }
+    if (nextNewline < 0) return raw
+    lineStart = nextNewline + 1
+  }
+  return raw
+}
 
 // dsh 0.1.7 settings: the runtime namespace registry is gone. A plugin's
 // settings page is the projection of its `Config` schema (below) and the
@@ -148,6 +239,12 @@ interface HostServices {
 }
 
 export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<void> {
+  // The bundled usage/config guide rides the host's skill registry (default
+  // install): `inject = ['skills']` guarantees the service exists on every
+  // real host; register unconditionally so a missing service fails loud
+  // instead of silently dropping the skill.
+  ctx.skills.registerProvider(() => skillProvider)
+
   const cfgNow = (): CronConfig => ({
     fireHistoryLimit: config.fireHistoryLimit.get(),
     historyLimit: config.historyLimit.get(),

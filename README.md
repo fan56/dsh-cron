@@ -91,7 +91,7 @@ Then add the package to the profile's `dsh.profile.bundles` (after `@deepseek-ai
 dsh plugin --profile tui remove @aiwayds/dsh-cron
 ```
 
-The host reconciles the profile automatically: the `dsh.profile.bundles` entry is spliced and the plugin's patch layer drops — schedules silently stop firing.
+The host reconciles the profile automatically: the `dsh.profile.bundles` entry is spliced and the plugin's patch layer drops — schedules silently stop firing, and the bundled `dsh-cron-config` skill disappears from the registry with the plugin.
 
 What stays on disk, kept on purpose (deleting data is destructive, and a reinstall rehydrates it):
 
@@ -100,19 +100,17 @@ What stays on disk, kept on purpose (deleting data is destructive, and a reinsta
 
 Reinstall semantics follow [ADR 0002](./docs/adr/0002-skip-missed-occurrences.md): occurrences that came due while the plugin was away are **skipped and logged, never delivered late** — a one-shot missed in downtime is archived as `missed`. Cron means "execute at time X"; the plugin does not resurrect stale work after a gap.
 
-The `cron` skill copied to `$DSH_HOME/skills/cron` (see [Skill](#skill-model-guidance)) is a plain file copy and survives removal — delete it by hand if unwanted. To purge the task data too:
+Legacy note: releases before 0.2.0 documented a manual skill copy (`cp -r skill/cron $DSH_HOME/skills/`). That copy is obsolete since the skill now mounts through the provider registry — delete a stale `$DSH_HOME/skills/cron` directory if you made one, or it shadows the packaged guide. To purge the task data too:
 
 ```bash
 rm -r ~/.dsh/storages/cron
 ```
 
-### Skill (model guidance)
+### Skill (model guidance) — installed by default
 
-The npm tarball ships a `cron` skill (`skill/cron/SKILL.md`) that teaches the model when and how to use the tools (rule selection, window thinking, the deploy-monitor and watchdog patterns). Install it by copying to the dsh skill root:
+The npm tarball ships a `dsh-cron-config` skill (`skill/dsh-cron-config/SKILL.md`) that teaches the model when and how to use the tools (rule selection, window thinking, session binding, the deploy-monitor and watchdog patterns). It mounts **automatically**: the plugin registers it with the host's skill registry at boot (`ctx.skills` provider, bundled rank), so installing the plugin is the skill install — no file copy into `$DSH_HOME/skills`, and removing the plugin removes the skill with it, no residue.
 
-```bash
-mkdir -p $DSH_HOME/skills && cp -r <package>/skill/cron $DSH_HOME/skills/
-```
+Users never invoke it by hand: say things like "每 10 分钟检查一次 CI" or "watch this deploy until it's done" in any top-level session and the model routes through the skill to `cron_create`. The skill body lives in [skill/dsh-cron-config/SKILL.md](./skill/dsh-cron-config/SKILL.md).
 
 ### Settings (`dsh-cron` entry in the profile patch)
 

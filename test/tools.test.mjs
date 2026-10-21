@@ -25,7 +25,7 @@ const check = async (name, fn) => {
 const T0 = new Date(2026, 7, 31, 12, 0, 0).getTime()
 const AGENT = { id: 'agent-abc' }
 
-function makeFixture() {
+function makeFixture(agent = AGENT) {
   const work = mkdtempSync(join(tmpdir(), 'dsh-cron-tools-'))
   const registered = []
   const toolCtx = {
@@ -45,12 +45,12 @@ function makeFixture() {
     historyStore: createHistoryStore(join(work, 'cron'), 50),
     config: { fireHistoryLimit: 7 },
     logger: { warn: () => {}, info: () => {} },
-    targets: () => [AGENT],
+    resolveTarget: async () => agent,
     deliver: async () => 'delivered',
   })
-  registerCronTools(toolCtx, AGENT, engine)
+  registerCronTools(toolCtx, agent, engine)
   const byName = Object.fromEntries(registered.map((d) => [d.name, d]))
-  const exec = { agent: AGENT, signal: new AbortController().signal }
+  const exec = { agent, signal: new AbortController().signal }
   const cleanup = () => rmSync(work, { recursive: true, force: true })
   return { byName, engine, exec, cleanup }
 }
@@ -78,7 +78,45 @@ try {
       assert.match(value.id, /^[0-9a-f]{8}$/)
       assert.equal(value.next_fire, new Date(T0 + 600000).toISOString())
       assert.equal(value.window_end, new Date(T0 + 3600000).toISOString())
+      assert.equal(value.attach, 'creator')
+      assert.equal(value.session_id, 'agent-abc')
       assert.equal(f.engine.size, 1)
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  await check('cron_create refuses a delegated child session (ADR 0010)', async () => {
+    const child = { id: 'child-1', session: { header: { delegationDepth: 1 } }, options: {} }
+    const f = makeFixture(child)
+    try {
+      const value = await f.byName.cron_create.execute(
+        { prompt: 'from a subagent', every_seconds: 600, max_duration_seconds: 3600 },
+        f.exec,
+      )
+      assert.equal(value.ok, false)
+      assert.match(value.error, /delegated child sessions cannot own cron tasks/)
+      assert.equal(f.engine.size, 0)
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  await check('cron_list exposes the session binding on task views', async () => {
+    const f = makeFixture()
+    try {
+      await f.byName.cron_create.execute(
+        { prompt: 'watch', cron: '*/10 * * * *', max_duration_seconds: 3600, attach: 'creator' },
+        f.exec,
+      )
+      const value = await f.byName.cron_list.execute({}, f.exec)
+      assert.equal(value.ok, true)
+      assert.equal(value.tasks.length, 1)
+      assert.equal(value.tasks[0].rule_human, 'every 10 minutes')
+      assert.equal(value.tasks[0].attach, 'creator')
+      assert.equal(value.tasks[0].session_id, 'agent-abc')
+      assert.deepEqual(value.tasks[0].fires, [])
+      assert.equal(value.tasks[0].created_by, 'agent-abc')
     } finally {
       f.cleanup()
     }

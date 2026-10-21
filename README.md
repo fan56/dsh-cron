@@ -1,6 +1,6 @@
 # @aiwayds/dsh-cron
 
-Cron scheduling for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as an independent plugin: schedule prompts on standard cron expressions or fixed intervals and have them delivered to live agents — across TUI, web, and feishu surfaces.
+Cron scheduling for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) as an independent plugin: schedule prompts on standard cron expressions or fixed intervals, bound to exactly one session — creator by default, or a dedicated new session — with no global delivery (ADR 0010).
 
 **Requires dsh >= 0.2.0-rc.2** — this plugin targets the dsh RC/stable line only (CI and releases resolve the newest of the `latest`/`next` dist-tags at runtime). **The alpha line is no longer supported.**
 
@@ -8,20 +8,22 @@ Design docs: [CONTEXT.md](./CONTEXT.md) (glossary) and [docs/adr/](./docs/adr) (
 
 ## Why not dsh-schedule?
 
-`@deepseek-ai/dsh-schedule` provides session-scoped reminders (`after` / `at` / `every_seconds ≥ 5min`) that only fire while the original session stays live, and its protocol explicitly excludes cron expressions. dsh-cron is the complement: **profile-anchored recurring tasks** — a fire lands in whichever live root agent exists, regardless of which surface the session belongs to.
+`@deepseek-ai/dsh-schedule` provides session-scoped reminders (`after` / `at` / `every_seconds ≥ 5min`), and its protocol explicitly excludes cron expressions. dsh-cron is the complement: **recurring tasks on real cron expressions**, using the same session-binding discipline — a fire lands only in the session the task is bound to (creator by default, or a dedicated new one), and a stopped session cancels its tasks, exactly like dsh-schedule's reminders. Where dsh-schedule says "remind this conversation at time X", dsh-cron says "run this bounded cron job for session Y".
 
-As of **dsh 0.2.0, the official automation schedule ships as an OPTIONAL_BUNDLE that is disabled by default** — after upgrading, existing official scheduled tasks silently stop firing until you manually opt in (and the official time-context feature goes dark with it). dsh-cron is unaffected by that switch: it is an **independent, always-resident scheduling plugin** that registers its own cordis plugin and clock, with no dependency on the official bundle — out of the box on every profile it is installed in, no opt-in required. If you relied on official scheduled tasks and do not want to hunt for a hidden settings toggle after each host upgrade, dsh-cron is the always-on alternative; the two can also coexist, since their scopes do not overlap (session-bound reminders vs profile-anchored cron).
+As of **dsh 0.2.0, the official automation schedule ships as an OPTIONAL_BUNDLE that is disabled by default** — after upgrading, existing official scheduled tasks silently stop firing until you manually opt in (and the official time-context feature goes dark with it). dsh-cron is unaffected by that switch: it is an **independent, always-resident scheduling plugin** that registers its own cordis plugin and clock, with no dependency on the official bundle — out of the box on every profile it is installed in, no opt-in required. If you relied on official scheduled tasks and do not want to hunt for a hidden settings toggle after each host upgrade, dsh-cron is the always-on alternative; the two can also coexist, since their rule vocabularies do not overlap (at/every reminders vs cron expressions and short bounded intervals).
 
 ## Core properties
 
+- **Bound to one session, never global** (ADR 0010): every task carries `attach` — `creator` (default) delivers every fire to the session that ran `cron_create`; `new` opens a dedicated session for the task (background monitors isolated from the conversation). A fire whose session is stopped is never rerouted elsewhere; the occurrence skips (ADR 0002).
 - **No infinite cron** (ADR 0006): every recurring task carries a mandatory validity window (`max_duration_seconds` or `end_at`), capped at one year. On expiry the task delivers one terminal `expired` fire and archives itself. One-shot tasks self-archive after their single fire.
 - **Two rule shapes** (ADR 0007): `cron` (5-field calendar expression, host-local time) or `every_seconds` (interval ≥ 60s, anchored at `start_at`, first fire one full interval in).
 - **The plugin owns the clock** (ADR 0007): the model only expresses intent (`every_seconds: 600`, `end_at: "2026-12-31T00:00:00Z"`); all time math happens in the plugin and tool results echo absolute ISO times (`now`, `next_fire`). The model never needs to know the current time.
-- **Per-task delivery policy** (ADR 0003): `followup` (default) queues a new turn via the agent's idle phase — a busy target waits and coalesces overdue occurrences into one fire annotated with `coalesced_count`. `steer` submits through `agent.steer()` and lands at the nearest step boundary, mid-turn — the watchdog option.
-- **Two execution modes** (ADR 0005): `sub-agent` (default) — the framing instructs the model to spawn an isolated background worker, then call `cron_report` to backfill status/summary into the fire record; `self` — handled in the target conversation itself, best-effort reporting.
-- **Missed occurrences are skipped, never delivered late** (ADR 0002): if the profile was down or no agent was live when an occurrence came due, it is logged and settled. A one-shot missed in downtime archives as `missed`. Cron means "execute at time X"; dsh-cron does not resurrect stale work.
+- **Per-task delivery policy** (ADR 0003): `followup` (default) queues a new turn via the session agent's idle phase — a busy target waits and coalesces overdue occurrences into one fire annotated with `coalesced_count`. `steer` submits through `agent.steer()` and lands at the nearest step boundary, mid-turn — the watchdog option.
+- **Two execution modes** (ADR 0005): `sub-agent` (default) — the framing instructs the model to spawn an isolated background worker, then call `cron_report` to backfill status/summary into the fire record; `self` — handled in the bound conversation itself, best-effort reporting.
+- **Missed occurrences are skipped, never delivered late** (ADR 0002): if the profile was down or the bound session was unresolvable when an occurrence came due, it is logged and settled. A one-shot missed in downtime archives as `missed`. Cron means "execute at time X"; dsh-cron does not resurrect stale work.
+- **Lifecycle follows the session** (ADR 0010): a cold session (host restarted) is resumed on demand when a fire is due; a stopped session (archived with `stopActivity`) cancels its tasks; archiving a session that still holds cron tasks is refused until they stop — dsh-schedule's discipline, applied to cron.
 - **Full traceability** (Q3): every delivered fire produces a durable `FireRecord` (due time, policy, mode, coalesced count, status, summary). Records ride with the task, capped at 7 per task (configurable); ended tasks move to `_history.json` (cap 50).
-- **Tools for every agent** (ADR 0006): `cron_create` / `cron_list` / `cron_delete` / `cron_report` are registered on all runtime agents — root or sub-agent — and every task records `createdBy`.
+- **Tools on every top-level agent** (ADR 0006): `cron_create` / `cron_list` / `cron_delete` / `cron_report` are registered on all runtime agents and every task records `createdBy`. Delegated child sessions are refused at creation — their sessions never receive fires.
 
 ## Agent usage (primary)
 
@@ -38,8 +40,8 @@ The LLM calls the tools directly. Humans just talk:
 
 | Tool | Purpose |
 | ---- | ------- |
-| `cron_create` | Create a task. Exactly one rule (`cron` \| `every_seconds`); recurring tasks require exactly one window bound (`max_duration_seconds` \| `end_at`). |
-| `cron_list` | Active tasks with next-fire times and retained fire records. |
+| `cron_create` | Create a task. Exactly one rule (`cron` \| `every_seconds`); recurring tasks require exactly one window bound (`max_duration_seconds` \| `end_at`). `attach` picks the bound session: `creator` (default) or `new` (dedicated). |
+| `cron_list` | Active tasks with bound session, next-fire times, and retained fire records. |
 | `cron_delete` | Delete and archive (status `cancelled`). |
 | `cron_report` | Backfill a fire's outcome (`completed`/`failed` + summary); one-shots archive on report. |
 
@@ -53,14 +55,20 @@ Standard 5 fields: `minute hour day-of-month month day-of-week`, with lists (`1,
 /cron list
 /cron create "*/10 * * * *" "检查 CI run 1234，终态则删除本任务" --for=7200
 /cron create "0 9 * * 1-5" "生成周报" --until=2026-12-31T23:59:59+08:00
+/cron create "0 * * * *" "磁盘水位巡检" --new-session --for=2592000
 /cron delete a1b2c3d4
 /cron fires a1b2c3d4
 /cron history 20
 ```
 
+`--new-session` opens a dedicated session for the task instead of binding the
+conversation you ran the command in.
+
 ## Persistence
 
-Profile-level, not per-session (ADR 0001):
+The store is profile-level so bindings survive restarts; each task file
+records the one session it delivers to (ADR 0001 store placement, ADR 0010
+binding):
 
 ```
 $DSH_HOME/storages/cron/<8-hex-id>.json   # active tasks with their fire records
@@ -133,7 +141,9 @@ migration never re-runs; a failed write retries on the next boot).
 
 ## Limitations
 
-- **Fires need a live profile**: dsh-cron is an in-process plugin by design (ADR 0001; an MCP server cannot push). Nothing fires while dsh is not running, and downtime-accrued occurrences are skipped by policy.
+- **Fires need a live profile**: dsh-cron is an in-process plugin by design (ADR 0001; an MCP server cannot push). Nothing fires while dsh is not running, and downtime-accrued occurrences are skipped by policy. A cold session is resumed on demand when a fire is due (ADR 0010), but only while the host process is up.
+- **Delivery follows the bound session only** (ADR 0010): a task whose session is stopped skips until the session returns or is stopped-with-activity (which cancels the task). There is no reroute to another conversation, by design.
+- **Sub-agent sessions neither create nor receive**: delegated child sessions are refused at `cron_create` and never resolve as delivery targets.
 - **Host-local calendar time**: calendar rules read the host clock's zone; containers in UTC will shift wall-clock schedules (ADR 0009).
 - **`self`-mode outcomes are best-effort**: nothing can force the model to call `cron_report`; sub-agent mode is the traceable default.
 - **One steer per tick**: while a steer sits unconsumed in an inbox, later occurrences still submit once per tick rather than collapsing (dsh's inbox cannot be introspected from a plugin).
@@ -142,8 +152,9 @@ migration never re-runs; a failed write retries on the next boot).
 
 ```
 src/
-  index.ts        plugin entry: settings, agent/created mount, /cron, tick loop
+  index.ts        plugin entry: settings, agent/created mount, /cron, tick loop, session lifecycle
   scheduler.ts    dsh-free tick engine (fires, coalescing, skip, expiry)
+  attach.ts       session binding glue: target resolution, cold resume, dedicated sessions
   rule.ts         selector + validity-window validation, occurrence math
   cron-expr.ts    5-field cron parser + next-fire computation
   framing.ts      [CRON FIRE] model framing (injection-resistant)

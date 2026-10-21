@@ -29,6 +29,8 @@ function makeTask(id = generateId()) {
     selector: { kind: 'every', everySeconds: 600 },
     prompt: 'check the build',
     recurring: true,
+    attach: 'creator',
+    sessionId: 'agent-1',
     deliveryPolicy: 'followup',
     executionMode: 'sub-agent',
     createdAt: 1000,
@@ -66,6 +68,34 @@ try {
     const listed = await store.list()
     assert.equal(listed.length, 1)
     assert.equal(listed[0].id, 'bbbbbbbb')
+  })
+
+  await check('task store: loads pre-0010 files without attach/sessionId (ADR 0010 upgrade path)', async () => {
+    const dir = join(work, 'legacy')
+    const store = createTaskStore(dir)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'cccccccc.json'),
+      JSON.stringify({
+        id: 'cccccccc',
+        selector: { kind: 'every', everySeconds: 600 },
+        prompt: 'pre-0010 task',
+        recurring: true,
+        deliveryPolicy: 'followup',
+        executionMode: 'sub-agent',
+        createdAt: 1000,
+        startAt: 1000,
+        windowEnd: 2000,
+        cursorAt: 1000,
+        lastFiredAt: 0,
+        createdBy: 'agent-1',
+        fires: [],
+      }) + '\n',
+    )
+    const listed = await store.list()
+    assert.equal(listed.length, 1)
+    assert.equal(listed[0].id, 'cccccccc')
+    assert.equal(listed[0].sessionId, undefined) // the engine archives it at rehydrate
   })
 
   await check('history store: FIFO cap keeps the newest entries', async () => {

@@ -2,8 +2,10 @@
  * dsh-cron data model: bounded cron tasks, fire records, history.
  *
  * Every recurring task carries a mandatory validity window capped at one year
- * (ADR 0006) — there is no infinite cron. Tasks are profile-anchored
- * (ADR 0001), not session-anchored.
+ * (ADR 0006) — there is no infinite cron. Every task is anchored to exactly
+ * one session (ADR 0010) — there is no global delivery: fires land only in
+ * the task's own session, and the store merely persists that binding at
+ * profile level so it survives restarts.
  *
  * @module dsh-cron/types
  */
@@ -12,6 +14,13 @@
 export type ScheduleSelector =
 	| { kind: 'cron'; cron: string }
 	| { kind: 'every'; everySeconds: number };
+
+/**
+ * How a task's session is chosen at creation (ADR 0010). `creator` binds the
+ * session that ran cron_create; `new` binds a dedicated session the plugin
+ * opens for the task at creation time.
+ */
+export type AttachMode = 'creator' | 'new';
 
 /** How fires land in the target conversation (ADR 0003). */
 export type DeliveryPolicy = 'followup' | 'steer';
@@ -38,12 +47,14 @@ export interface FireRecord {
 /** Terminal status of an archived (ended) task. */
 export type HistoryStatus = 'done' | 'failed' | 'cancelled' | 'missed' | 'expired';
 
-/** A recurring or one-shot scheduled task, owned by the profile. */
+/** A recurring or one-shot scheduled task, bound to exactly one session. */
 export interface CronTask {
 	id: string; // 8-hex
 	selector: ScheduleSelector;
 	prompt: string;
 	recurring: boolean; // false = one-shot (fires once, then archives)
+	attach: AttachMode; // how the bound session was chosen (ADR 0010)
+	sessionId: string; // the one session every fire is delivered to (ADR 0010)
 	deliveryPolicy: DeliveryPolicy;
 	executionMode: ExecutionMode;
 	createdAt: number; // epoch ms
@@ -61,6 +72,8 @@ export interface HistoryEntry {
 	selector: ScheduleSelector;
 	prompt: string;
 	recurring: boolean;
+	attach?: AttachMode; // absent in pre-0010 archive rows
+	sessionId?: string; // absent in pre-0010 archive rows
 	createdBy: string;
 	createdAt: number;
 	endedAt: number;
@@ -97,11 +110,18 @@ export function offsetClock(offsetMs: number): Clock {
 
 export const CRON_ID_REGEX = /^[0-9a-f]{8}$/;
 
+const ATTACH_MODES: readonly AttachMode[] = ['creator', 'new'];
+
 export function generateId(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(4));
 	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Lenient decode-side guard: pre-0010 task files carry no attach/sessionId
+ * and must still load (the engine archives them as cancelled at rehydrate,
+ * see `isUnboundTask`), so only present fields are shape-checked here.
+ */
 export function isValidCronTask(value: unknown): value is CronTask {
 	if (typeof value !== 'object' || value === null) return false;
 	const o = value as Record<string, unknown>;
@@ -110,6 +130,8 @@ export function isValidCronTask(value: unknown): value is CronTask {
 		CRON_ID_REGEX.test(o.id) &&
 		typeof o.prompt === 'string' &&
 		typeof o.recurring === 'boolean' &&
+		(o.attach === undefined || (typeof o.attach === 'string' && ATTACH_MODES.includes(o.attach as AttachMode))) &&
+		(o.sessionId === undefined || (typeof o.sessionId === 'string' && o.sessionId.length > 0)) &&
 		typeof o.createdAt === 'number' &&
 		typeof o.startAt === 'number' &&
 		typeof o.cursorAt === 'number' &&
@@ -118,4 +140,14 @@ export function isValidCronTask(value: unknown): value is CronTask {
 		typeof o.fires === 'object' &&
 		o.fires !== null
 	);
+}
+
+/**
+ * A task from before ADR 0010: no session binding, therefore undeliverable
+ * under the no-global-delivery rule. The engine archives these as cancelled.
+ */
+export function isUnboundTask(
+	task: Pick<CronTask, 'sessionId'>,
+): boolean {
+	return typeof task.sessionId !== 'string' || task.sessionId.length === 0;
 }

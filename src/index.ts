@@ -1,7 +1,8 @@
 /**
  * dsh-cron — cron scheduling for the DeepSeek Harness as an independent
  * plugin: bounded tasks with calendar (cron) and interval (every_seconds)
- * rules, delivered to live agents via followup or steer.
+ * rules, each bound to exactly one session (ADR 0010 — creator by default or
+ * a dedicated new session; never global), delivered via followup or steer.
  *
  * Shape follows the ecosystem conventions: a schemastery Config schema
  * (entry `dsh-cron` in the profile patch), tools registered on every runtime
@@ -25,6 +26,12 @@ import type { CommandDefinition, CommandInvocation, CommandResult } from '@deeps
 // (a SettingsForms service since 0.1.7) on the Context type. There is no
 // runtime import — the host provides the settings service.
 import type {} from '@deepseek-ai/dsh-settings'
+// Types only: loads dsh-workspace's cordis Events augmentation
+// (`workspace/session-activity` / `workspace/session-stop`) and the
+// merge-extensible SessionActivityKindMap this plugin adds `cron` to.
+// No runtime import — the host provides the workspace service.
+import type {} from '@deepseek-ai/dsh-workspace'
+import type {} from '@deepseek-ai/dsh-workspace/types'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 
@@ -32,6 +39,14 @@ import { CronEngine, type AgentLike, type DeliveryOutcome } from './scheduler.ts
 import { nextOccurrence } from './rule.ts'
 import { createHistoryStore, createTaskStore } from './store.ts'
 import { registerCronTools, type ToolRegistrarContext } from './tools.ts'
+import {
+  cancelTasksOfSession,
+  createDedicatedSessionFactory,
+  createTargetResolver,
+  pruneOrphanTasks,
+  type BindableAgent,
+  type ResolvedSessionAgent,
+} from './attach.ts'
 import { defaultCronDir, resolveDshHome } from './paths.ts'
 import { runLegacySettingsImport, type LegacyImportLogger, type SettingsUpdateSeam } from './legacy-import.ts'
 import { cronFireMessage } from './fire-message.ts'
@@ -56,6 +71,14 @@ export interface CronFireMessageSource {
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     cron: CronFireMessageSource
+  }
+}
+
+// Types only: the archive-admission waterfall keys off merge-extensible
+// activity kinds; `cron` marks sessions that still hold active cron tasks.
+declare module '@deepseek-ai/dsh-workspace/types' {
+  interface SessionActivityKindMap {
+    cron: true
   }
 }
 
@@ -105,6 +128,25 @@ interface RuntimeAgent {
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 }
 
+/** Optional host services. cordis forbids reading a service without
+ *  declaring it, so each one arrives through a ctx.inject hook that fills a
+ *  late-bound slot; until it mounts, the affected capability stands down
+ *  (cold sessions just skip per ADR 0002). */
+interface HostServices {
+  agents: {
+    get(id: string): BindableAgent | undefined
+    create(options: { sessionId: string; meta?: { cwd?: string } }): Promise<{ agent: BindableAgent }>
+    roots(): BindableAgent[]
+  }
+  sessionController?: {
+    resolveAgent(sessionId: string): Promise<ResolvedSessionAgent>
+  }
+  sessionQuery?: {
+    listSessions(): Promise<Array<{ header: { id: string } }>>
+  }
+  workspace?: Record<string, unknown>
+}
+
 export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<void> {
   const cfgNow = (): CronConfig => ({
     fireHistoryLimit: config.fireHistoryLimit.get(),
@@ -116,6 +158,10 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
   const dir = resolveStorageDir(cfgNow().storageDir)
   const store = createTaskStore(dir)
   const historyStore = createHistoryStore(dir, cfgNow().historyLimit)
+
+  const host = (): HostServices => ctx as unknown as HostServices
+  let sessionController: HostServices['sessionController'] | undefined
+  let sessionQuery: HostServices['sessionQuery'] | undefined
 
   /**
    * Production delivery seam (ADR 0003/0005): steer submits unconditionally
@@ -151,8 +197,27 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
       },
     },
     logger: ctx.logger,
-    targets: () => ctx.agents.roots() as unknown as AgentLike[],
+    resolveTarget: createTargetResolver({
+      getAgent: (id) => host().agents.get(id),
+      resolveSessionAgent: async (id) => {
+        const sc = sessionController
+        return sc === undefined ? undefined : sc.resolveAgent(id)
+      },
+    }),
+    createDedicated: createDedicatedSessionFactory({
+      createAgent: (options) => host().agents.create(options),
+      cwdOf: (createdBy) => host().agents.get(createdBy)?.session?.header?.cwd,
+    }),
     deliver,
+  })
+
+  // Optional service hooks: each fires when (or if) the host mounts the
+  // service; the plugin must work without any of them.
+  ctx.inject(['sessionController'], (scCtx) => {
+    sessionController = (scCtx as unknown as HostServices).sessionController
+  })
+  ctx.inject(['sessionQuery'], (sqCtx) => {
+    sessionQuery = (sqCtx as unknown as HostServices).sessionQuery
   })
 
   // Tools on every runtime agent (ADR 0006): the plugin does not apply
@@ -167,16 +232,19 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
   }, 'dsh-cron: agent tools')
 
   // Boot: rehydrate from disk (skipping downtime-accrued occurrences per
-  // ADR 0002) and start the tick loop on a plain unref'd interval, cleared
-  // when the plugin is disposed.
+  // ADR 0002, archiving pre-0010 unbound tasks per ADR 0010), prune tasks
+  // whose bound session no longer exists, and start the tick loop on a plain
+  // unref'd interval, cleared when the plugin is disposed.
   ctx.effect(() => {
     mkdirSync(dir, { recursive: true })
     void engine
       .rehydrate()
-      .then(({ skipped, missed }) => {
-        if (skipped > 0 || missed > 0) {
-          ctx.logger.info(`cron: rehydrated store at ${dir} — ${skipped} occurrence(s) skipped, ${missed} one-shot(s) missed`)
-        }
+      .then(async ({ skipped, missed, unbound }) => {
+        const parts = [`${skipped} occurrence(s) skipped`, `${missed} one-shot(s) missed`]
+        if (unbound > 0) parts.push(`${unbound} unbound task(s) cancelled`)
+        ctx.logger.info(`cron: rehydrated store at ${dir} — ${parts.join(', ')}`)
+        const pruned = await pruneOrphanTasks(engine, sessionExists)
+        if (pruned > 0) ctx.logger.info(`cron: archived ${pruned} task(s) whose session no longer exists (ADR 0010)`)
       })
       .catch((error: unknown) => {
         ctx.logger.warn(`cron: rehydrate failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -190,6 +258,49 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
     }
   }, 'dsh-cron: tick loop')
 
+  // Session lifecycle (ADR 0010, optional workspace service): an archive
+  // request for a session that still holds cron tasks is refused via the
+  // activity waterfall; a stop (archive with stopActivity) cancels them.
+  ctx.inject(['workspace'], (wctx) => {
+    const workspace = (wctx as unknown as HostServices).workspace
+    if (workspace === undefined) return
+    wctx.effect(() => {
+      const activity = ctx.on('workspace/session-activity', async ({ sessionId }, next) => {
+        const active = engine.listTasks().filter((t) => t.sessionId === sessionId)
+        const rest = await next()
+        if (active.length === 0) return rest
+        return [
+          {
+            kind: 'cron' as const,
+            items: active.map((t) => ({ id: t.id, label: t.prompt.slice(0, 60) })),
+          },
+          ...rest,
+        ]
+      })
+      const stop = ctx.on('workspace/session-stop', async ({ sessionId }) => {
+        const cancelled = await cancelTasksOfSession(engine, sessionId)
+        if (cancelled.length > 0) {
+          ctx.logger.info(`cron: session ${sessionId} stopped; ${cancelled.length} attached task(s) cancelled (ADR 0010)`)
+        }
+      })
+      return () => {
+        stop()
+        activity()
+      }
+    }, 'dsh-cron: session lifecycle')
+  })
+
+  // Session-existence probe for the boot sweep. Without sessionQuery the
+  // answer is "assume alive" — the sweep stands down rather than prune blind.
+  function sessionExists(sessionId: string): Promise<boolean> {
+    const query = sessionQuery
+    if (!query) return Promise.resolve(true)
+    return query
+      .listSessions()
+      .then((rows) => rows.some((row) => row.header.id === sessionId))
+      .catch(() => true)
+  }
+
   // /cron command through the shared registry (optional peer; guarded like
   // dsh-vault so hosts without dsh-commands still load the plugin).
   ctx.inject(['commands'], (cmdCtx) => {
@@ -200,9 +311,9 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
     cmdCtx.effect(() => {
       const definition: CommandDefinition = {
         name: 'cron',
-        description: '定时任务：list | create | delete | fires | history | help（跨会话、有界、可追溯）',
+        description: '定时任务：list | create | delete | fires | history | help（绑定会话、有界、可追溯）',
         input: {
-          hint: '[list | create "<cron|every=N>" "<prompt>" [--once] [--steer] [--self] (--for=<seconds>|--until=<iso>) [--start=<iso>] | delete <id> | fires <id> | history [N] | help]',
+          hint: '[list | create "<cron|every=N>" "<prompt>" [--once] [--steer] [--self] [--new-session] (--for=<seconds>|--until=<iso>) [--start=<iso>] | delete <id> | fires <id> | history [N] | help]',
         },
         handler: (invocation) => handle(invocation),
       }
@@ -222,7 +333,7 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
           return await doList()
         case 'create':
         case 'add':
-          return await doCreate(rest)
+          return await doCreate(rest, invocation)
         case 'delete':
         case 'rm':
           return await doDelete(rest[0] ?? '')
@@ -245,8 +356,9 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
   function describe(task: CronTask): string {
     const next = nextOccurrence(task, task.cursorAt)
     return [
-      `${task.id}  ${task.recurring ? '↻ recurring' : '→ one-shot'}  ${ruleHuman(task)}  mode=${task.executionMode}  policy=${task.deliveryPolicy}`,
+      `${task.id}  ${task.recurring ? '↻ recurring' : '→ one-shot'}  ${ruleHuman(task)}  mode=${task.executionMode}  policy=${task.deliveryPolicy}  attach=${task.attach}`,
       `  prompt: ${task.prompt}`,
+      `  session: ${task.sessionId}${task.attach === 'creator' ? ' (creator)' : ' (dedicated)'}`,
       `  created_by: ${task.createdBy}  |  window_end: ${task.windowEnd === null ? '—' : new Date(task.windowEnd).toISOString()}`,
       `  last: ${task.lastFiredAt === 0 ? 'never' : new Date(task.lastFiredAt).toISOString()}  |  next: ${next === null ? '—' : new Date(next).toISOString()}  |  fires: ${task.fires.length}`,
     ].join('\n')
@@ -258,8 +370,8 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
     return ok(`${tasks.length} 个任务：\n\n${tasks.map((t) => describe(t)).join('\n\n')}`)
   }
 
-  async function doCreate(args: string[]): Promise<CommandResult> {
-    // create "<cron|every=N>" "<prompt...>" [--once] [--steer] [--self] (--for=S|--until=iso) [--start=iso]
+  async function doCreate(args: string[], invocation: CommandInvocation): Promise<CommandResult> {
+    // create "<cron|every=N>" "<prompt...>" [--once] [--steer] [--self] [--new-session] (--for=S|--until=iso) [--start=iso]
     const positional: string[] = []
     const flags = new Map<string, string | true>()
     for (const token of args) {
@@ -283,6 +395,7 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
     if (flags.has('once')) input.recurring = false
     if (flags.has('steer')) input.delivery_policy = 'steer'
     if (flags.has('self')) input.execution_mode = 'self'
+    if (flags.has('new-session') || flags.has('new')) input.attach = 'new'
     const forSeconds = flags.get('for')
     if (typeof forSeconds === 'string') input.max_duration_seconds = Number(forSeconds)
     const until = flags.get('until')
@@ -290,11 +403,12 @@ export async function apply(ctx: Context, config: CronRuntimeConfig): Promise<vo
     const start = flags.get('start')
     if (typeof start === 'string') input.start_at = start
     try {
-      const task = await engine.createTask(input, 'human:/cron')
+      const task = await engine.createTask(input, invocation.agent.id)
       const next = nextOccurrence(task, task.cursorAt)
       return ok(
-        `已创建 ${task.id}：${ruleHuman(task)}${task.recurring ? '（循环）' : '（一次性）'}\n` +
+        `已创建 ${task.id}：${ruleHuman(task)}${task.recurring ? '（循环）' : '（一次性）'}  attach=${task.attach}\n` +
           `  prompt: ${task.prompt}\n` +
+          `  session: ${task.sessionId}\n` +
           `  窗口截止: ${task.windowEnd === null ? '—' : new Date(task.windowEnd).toISOString()}\n` +
           `  下次触发: ${next === null ? '—' : new Date(next).toISOString()}`,
       )
@@ -378,14 +492,16 @@ function resolveStorageDir(configured: string): string {
 }
 
 const USAGE_CREATE =
-  '用法：/cron create "<cron|every=N>" "<prompt>" [--once] [--steer] [--self] (--for=<seconds>|--until=<iso>) [--start=<iso>]\n' +
-  '例：/cron create "*/10 * * * *" "检查 CI run 1234，终态则删除本任务" --for=7200'
+  '用法：/cron create "<cron|every=N>" "<prompt>" [--once] [--steer] [--self] [--new-session] (--for=<seconds>|--until=<iso>) [--start=<iso>]\n' +
+  '例：/cron create "*/10 * * * *" "检查 CI run 1234，终态则删除本任务" --for=7200\n' +
+  '    /cron create "0 9 * * *" "晨报" --new-session --for=2592000'
 
 const HELP = [
-  '定时任务（有界、可追溯、跨会话）：',
+  '定时任务（有界、可追溯、绑定会话）：',
   '  /cron list                                — 全部活动任务',
   `  ${USAGE_CREATE.split('\n')[0]}`,
   '        循环任务必须给窗口：--for=<秒> 或 --until=<RFC3339>，最长 1 年',
+  '        任务固定投递到其绑定的会话：默认创建会话；--new-session 开专属新会话',
   '  /cron delete <id>                         — 删除并归档',
   '  /cron fires <id>                          — 某任务的触发记录（每任务留最近 N 条）',
   '  /cron history [N=10]                      — 归档历史',

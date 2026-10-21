@@ -1,9 +1,9 @@
-// Engine delivery semantics: fires, busy coalescing, missed occurrences,
-// expiry, reports, fire retention — all with a fake clock, fake store and
-// fake agents (ADR 0002/0003/0006 behavior locked here).
+// Engine delivery semantics: session-bound fires, busy coalescing, missed
+// occurrences, expiry, reports, fire retention — all with a fake clock, fake
+// store and fake agents (ADR 0002/0003/0006/0010 behavior locked here).
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CronEngine } from '../lib/scheduler.js'
@@ -24,7 +24,7 @@ const check = async (name, fn) => {
 
 const T0 = new Date(2026, 7, 31, 12, 0, 0).getTime()
 
-function makeHarness({ targets = [makeAgent('root-1')], deliver } = {}) {
+function makeHarness({ live = ['root-1'], deliver, createDedicated, resolveTarget } = {}) {
   let now = T0
   const clock = { now: () => now }
   const work = mkdtempSync(join(tmpdir(), 'dsh-cron-engine-'))
@@ -42,20 +42,26 @@ function makeHarness({ targets = [makeAgent('root-1')], deliver } = {}) {
       submissions.push({ text: _text, policy })
       return 'delivered'
     })
+  // Live session table: resolveTarget hits only for a task bound to a live
+  // session (ADR 0010) — the engine must never see a global fallback.
+  const agents = new Map((Array.isArray(live) ? live : []).map((id) => [id, makeAgent(id)]))
+  const resolveTargetFn =
+    resolveTarget ?? (async (task) => agents.get(task.sessionId))
   const engine = new CronEngine({
     clock,
     store,
     historyStore,
     config: { fireHistoryLimit: 7 },
     logger,
-    targets: () => (typeof targets === 'function' ? targets() : targets),
+    resolveTarget: resolveTargetFn,
+    createDedicated,
     deliver: (agent, text, policy) => deliverFn(agent, text, policy),
   })
   const setNow = (ms) => {
     now = ms
   }
   const cleanup = () => rmSync(work, { recursive: true, force: true })
-  return { engine, store, historyStore, submissions, logs, setNow, cleanup, clock }
+  return { engine, store, historyStore, submissions, logs, setNow, cleanup, clock, agents }
 }
 
 function makeAgent(id) {
@@ -123,15 +129,125 @@ try {
   })
 
   await check('no live target = missed occurrence, logged, never delivered late (ADR 0002)', async () => {
-    const h = makeHarness({ targets: [] })
+    const h = makeHarness({ live: [] })
     try {
       await h.engine.createTask({ every_seconds: 60, prompt: 'ping', max_duration_seconds: 3600 }, 'root-1')
       h.setNow(T0 + 120 * 1000)
       await h.engine.tick()
       assert.equal(h.submissions.length, 0)
-      assert.ok(h.logs.warn.some((l) => /no live agent/.test(l)))
+      assert.ok(h.logs.warn.some((l) => /unavailable/.test(l)))
       await h.engine.tick()
       assert.equal(h.submissions.length, 0) // cursor settled; no double-skip log
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  await check('fires land only in the bound session, never in another live session (ADR 0010)', async () => {
+    const h = makeHarness({ live: ['root-1', 'other-9'] })
+    try {
+      await h.engine.createTask({ every_seconds: 60, prompt: 'for root-1', max_duration_seconds: 3600 }, 'root-1')
+      h.setNow(T0 + 60 * 1000)
+      await h.engine.tick()
+      assert.equal(h.submissions.length, 1) // delivered to the bound session's agent
+      assert.equal(h.submissions[0].agent, undefined) // submissions carry text only; binding checked via resolver
+
+      // Same task shape but bound to a session that is not live: no delivery,
+      // even though 'root-1' is live (the old global fallback is gone).
+      const h2 = makeHarness({ live: ['root-1'] })
+      try {
+        await h2.engine.createTask({ every_seconds: 60, prompt: 'bound elsewhere', max_duration_seconds: 3600 }, 'gone-1')
+        h2.setNow(T0 + 60 * 1000)
+        await h2.engine.tick()
+        assert.equal(h2.submissions.length, 0)
+      } finally {
+        h2.cleanup()
+      }
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  await check('attach=new opens a dedicated session and binds the task to it', async () => {
+    const dedicated = []
+    const h = makeHarness({
+      createDedicated: async (createdBy) => {
+        const id = `session-dedicated-${dedicated.length}`
+        dedicated.push({ id, createdBy })
+        return { id }
+      },
+    })
+    try {
+      const task = await h.engine.createTask(
+        { every_seconds: 60, prompt: 'isolated monitor', max_duration_seconds: 3600, attach: 'new' },
+        'root-1',
+      )
+      assert.equal(task.attach, 'new')
+      assert.equal(task.sessionId, 'session-dedicated-0')
+      assert.equal(dedicated[0].createdBy, 'root-1')
+      // Not resolvable while the dedicated session is not live: the occurrence
+      // skips and settles (ADR 0002), no global fallback.
+      h.setNow(T0 + 60 * 1000)
+      await h.engine.tick()
+      assert.equal(h.submissions.length, 0)
+      // Resolvable once live: the next occurrence delivers into the dedicated session.
+      h.agents.set(task.sessionId, { id: task.sessionId })
+      h.setNow(T0 + 120 * 1000)
+      await h.engine.tick()
+      assert.equal(h.submissions.length, 1)
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  await check("attach=new without a session factory is rejected; bad attach mode is rejected", async () => {
+    const h = makeHarness()
+    try {
+      await assert.rejects(
+        () => h.engine.createTask({ every_seconds: 60, prompt: 'x', attach: 'new', max_duration_seconds: 60 }, 'root-1'),
+        /no session factory/,
+      )
+      await assert.rejects(
+        () => h.engine.createTask({ every_seconds: 60, prompt: 'x', attach: 'bogus' }, 'root-1'),
+        /attach must be one of/,
+      )
+      // Default is creator binding.
+      const task = await h.engine.createTask({ every_seconds: 60, prompt: 'x', max_duration_seconds: 60 }, 'root-1')
+      assert.equal(task.attach, 'creator')
+      assert.equal(task.sessionId, 'root-1')
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  await check('rehydrate archives pre-0010 unbound tasks as cancelled (ADR 0010)', async () => {
+    const h = makeHarness()
+    try {
+      // Plant a legacy task file: no attach, no sessionId.
+      const legacy = {
+        id: 'deadbeef',
+        selector: { kind: 'every', everySeconds: 600 },
+        prompt: 'old global task',
+        recurring: true,
+        deliveryPolicy: 'followup',
+        executionMode: 'sub-agent',
+        createdAt: T0,
+        startAt: T0,
+        windowEnd: T0 + 86400 * 1000,
+        cursorAt: T0,
+        lastFiredAt: 0,
+        createdBy: 'root-1',
+        fires: [],
+      }
+      mkdirSync(h.store.dir(), { recursive: true })
+      writeFileSync(join(h.store.dir(), 'deadbeef.json'), JSON.stringify(legacy, null, 2) + '\n')
+      const { unbound } = await h.engine.rehydrate()
+      assert.equal(unbound, 1)
+      assert.equal(h.engine.getTask('deadbeef'), undefined)
+      const hist = await h.historyStore.list(10)
+      assert.equal(hist[0].id, 'deadbeef')
+      assert.equal(hist[0].status, 'cancelled')
+      assert.ok(h.logs.warn.some((l) => /predates session binding/.test(l)))
     } finally {
       h.cleanup()
     }
@@ -226,7 +342,7 @@ try {
         historyStore: createHistoryStore(join(work, 'cron'), 50),
         config: { fireHistoryLimit: 3 },
         logger: { warn: () => {}, info: () => {} },
-        targets: () => [makeAgent('root-1')],
+        resolveTarget: async () => makeAgent('root-1'),
         deliver: async () => 'delivered',
       })
       await engine.createTask({ every_seconds: 60, prompt: 'frequent', max_duration_seconds: 3600 }, 'root-1')

@@ -2,8 +2,9 @@
  * Tick-loop scheduling engine — the dsh-free core.
  *
  * dsh runtime specifics enter only through injected seams (`clock`,
- * `targets`, `deliver`, `framing`, `logger`), so the whole delivery state
- * machine runs in plain unit tests with fake agents and fixed clocks.
+ * `resolveTarget`, `createDedicated`, `deliver`, `framing`, `logger`), so the
+ * whole delivery state machine runs in plain unit tests with fake agents and
+ * fixed clocks.
  *
  * Semantics (see docs/adr/):
  * - Skip missed occurrences (ADR 0002): a due occurrence that cannot be
@@ -25,6 +26,7 @@ import { countOccurrencesBetween, nextOccurrence, parseSelector, resolveWindow, 
 import { withFire, type HistoryStore, type TaskStore } from './store.ts';
 import {
 	generateId,
+	isUnboundTask,
 	type Clock,
 	type CronConfig,
 	type CronTask,
@@ -52,8 +54,20 @@ export interface EngineOptions {
 	historyStore: HistoryStore;
 	config: Pick<CronConfig, 'fireHistoryLimit'>;
 	logger: { info(...args: unknown[]): void; warn(...args: unknown[]): void };
-	/** Live root agents in creation order; empty array = no target (ADR 0002). */
-	targets: () => AgentLike[];
+	/**
+	 * Resolve the one live target for a task's bound session (ADR 0010).
+	 * Returning undefined means "not deliverable now" — the occurrence is
+	 * skipped and settled, never delivered late (ADR 0002). Implementors
+	 * handle live lookup, cold-session resume, and subagent refusal; the
+	 * engine stays host-free.
+	 */
+	resolveTarget: (task: CronTask) => Promise<AgentLike | undefined>;
+	/**
+	 * Open a dedicated session for an `attach: 'new'` task (ADR 0010). Called
+	 * from createTask with the creating agent's id (for cwd inheritance).
+	 * Required only if `attach: 'new'` creation is allowed; absent rejects it.
+	 */
+	createDedicated?: (createdBy: string) => Promise<AgentLike>;
 	/**
 	 * Submit one fire framing. `followup` implementors gate on the idle phase
 	 * and return 'busy' when the target is mid-turn; `steer` implementors
@@ -69,6 +83,7 @@ export interface CreateTaskInput {
 	every_seconds?: unknown;
 	prompt?: unknown;
 	recurring?: unknown;
+	attach?: unknown;
 	delivery_policy?: unknown;
 	execution_mode?: unknown;
 	max_duration_seconds?: unknown;
@@ -107,13 +122,26 @@ export class CronEngine {
 	/**
 	 * Resume from disk. Occurrences that came due while the profile was down
 	 * are skipped and logged (ADR 0002); one-shots missed in downtime are
-	 * archived as `missed`.
+	 * archived as `missed`. Pre-0010 tasks without a session binding are
+	 * archived as `cancelled` — global delivery no longer exists (ADR 0010).
 	 */
-	async rehydrate(): Promise<{ skipped: number; missed: number }> {
+	async rehydrate(): Promise<{ skipped: number; missed: number; unbound: number }> {
 		const now = this.opts.clock.now();
 		let skipped = 0;
 		let missed = 0;
+		let unbound = 0;
 		for (const task of await this.opts.store.list()) {
+			if (isUnboundTask(task)) {
+				unbound += 1;
+				this.opts.logger.warn(
+					`cron: task ${task.id} predates session binding (ADR 0010); archived as cancelled, global delivery no longer exists`,
+				);
+				// Never entered the in-memory map: write the history row and drop
+				// the file directly, bypassing the map-backed archive path.
+				await this.writeHistory(task, 'cancelled', now);
+				await this.opts.store.remove(task.id);
+				continue;
+			}
 			this.tasks.set(task.id, task);
 			const next = nextOccurrence(task, task.cursorAt);
 			if (next === null || next > now) continue;
@@ -132,7 +160,7 @@ export class CronEngine {
 				await this.archive(task.id, 'missed');
 			}
 		}
-		return { skipped, missed };
+		return { skipped, missed, unbound };
 	}
 
 	/** Validate raw tool input and create a task. Throws RuleInputError on bad input. */
@@ -146,15 +174,32 @@ export class CronEngine {
 			throw new RuleInputError('recurring must be a boolean.');
 		}
 		const recurring = input.recurring === undefined ? true : input.recurring === true;
+		const attach = normalizeEnum(input.attach, ['creator', 'new'] as const, 'attach') ?? 'creator';
 		const policy = normalizeEnum(input.delivery_policy, ['followup', 'steer'] as const, 'delivery_policy') ?? 'followup';
 		const mode = normalizeEnum(input.execution_mode, ['self', 'sub-agent'] as const, 'execution_mode') ?? 'sub-agent';
 		const { startAt, windowEnd } = resolveWindow(input, recurring, now);
+
+		let sessionId: string;
+		if (attach === 'creator') {
+			sessionId = createdBy;
+		} else {
+			if (!this.opts.createDedicated) {
+				throw new RuleInputError("attach 'new' is unavailable: this host exposes no session factory.");
+			}
+			const dedicated = await this.opts.createDedicated(createdBy);
+			if (!dedicated || typeof dedicated.id !== 'string' || dedicated.id.length === 0) {
+				throw new RuleInputError("attach 'new' failed: the host returned no session id.");
+			}
+			sessionId = dedicated.id;
+		}
 
 		const task: CronTask = {
 			id: generateId(),
 			selector,
 			prompt: input.prompt,
 			recurring,
+			attach,
+			sessionId,
 			deliveryPolicy: policy,
 			executionMode: mode,
 			createdAt: now,
@@ -220,11 +265,12 @@ export class CronEngine {
 		const due = nextOccurrence(task, task.cursorAt);
 		if (due === null || due > now) return;
 
-		const target = this.opts.targets()[0];
+		const target = await this.opts.resolveTarget(task);
 		if (!target) {
-			// Missed Occurrence (ADR 0002): profile alive, no live agent.
+			// Missed Occurrence (ADR 0002): the bound session is not resolvable
+			// right now (stopped, cold without a resume path, or subagent-owned).
 			this.opts.logger.warn(
-				`cron: no live agent for task ${task.id} occurrence at ${new Date(due).toISOString()}; skipped, never delivered late`,
+				`cron: session ${task.sessionId} unavailable for task ${task.id} occurrence at ${new Date(due).toISOString()}; skipped, never delivered late`,
 			);
 			await this.settleCursor(task.id, now);
 			if (!task.recurring) await this.archive(task.id, 'missed');
@@ -262,14 +308,14 @@ export class CronEngine {
 			coalescedCount: 1,
 			status: 'expired',
 		};
-		const target = this.opts.targets()[0];
+		const target = await this.opts.resolveTarget(task);
 		if (target) {
 			// The notice is one-shot and queue-safe by construction, so both
 			// policies submit directly; a busy target still receives it at the
 			// next boundary or idle turn.
 			await this.opts.deliver(target, renderExpiryFraming(task, fire), task.deliveryPolicy);
 		} else {
-			this.opts.logger.warn(`cron: task ${task.id} expired with no live agent; expiry notice undeliverable`);
+			this.opts.logger.warn(`cron: task ${task.id} expired with session ${task.sessionId} unavailable; expiry notice undeliverable`);
 		}
 		this.opts.logger.warn(`cron: task ${task.id} validity window closed; archived as expired (ADR 0006)`);
 		await this.archiveWithFire(task.id, fire, now, 'expired');

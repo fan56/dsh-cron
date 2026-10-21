@@ -1,6 +1,8 @@
 /**
  * Model-facing cron tools over the engine, registered on every runtime agent
- * (ADR 0006): cron_create / cron_list / cron_delete / cron_report.
+ * (ADR 0006): cron_create / cron_list / cron_delete / cron_report. Creation
+ * from a delegated child session is refused — its session never receives
+ * deliveries (ADR 0010).
  *
  * Parameter schemas stay loose here; rich validation lives in rule.ts and
  * the engine so tests cover it without a host, and failures render as stable
@@ -23,9 +25,23 @@ export interface ToolRegistrarContext {
 	tools: { register(definition: ToolDefinition): () => void };
 }
 
-/** Minimal slice of the live agent handed to tool execute. */
+/**
+ * Minimal slice of the live agent handed to tool execute. The depth fields
+ * mirror dsh-subagent's `delegationDepthOf` — a delegated child session may
+ * not own cron tasks, because its session never receives deliveries. The
+ * runtime depth rides `options.subagentDepth`, declared only by
+ * dsh-subagent's augmentation, so it is read through `unknown`.
+ */
 export interface ToolAgent {
 	readonly id: string;
+	readonly session?: { header?: { delegationDepth?: number } };
+	readonly options?: unknown;
+}
+
+/** Inline `delegationDepthOf` (zero-dep policy; formula owned by dsh-subagent). */
+export function delegationDepthOf(agent: ToolAgent): number {
+	const runtime = (agent.options as { subagentDepth?: unknown } | undefined)?.subagentDepth;
+	return Math.max(agent.session?.header?.delegationDepth ?? 0, typeof runtime === 'number' ? runtime : 0);
 }
 
 const renderJson = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }];
@@ -46,6 +62,8 @@ function taskView(task: CronTask): Record<string, JsonValue> {
 		rule_human: ruleToHuman(task.selector),
 		prompt: task.prompt,
 		recurring: task.recurring,
+		attach: task.attach,
+		session_id: task.sessionId,
 		delivery_policy: task.deliveryPolicy,
 		execution_mode: task.executionMode,
 		created_by: task.createdBy,
@@ -65,13 +83,13 @@ function taskView(task: CronTask): Record<string, JsonValue> {
 	};
 }
 
-const CREATE_DESCRIPTION = `Create a bounded scheduled task (no infinite cron). Supply exactly one rule: cron (5-field expression, host-local time) or every_seconds (interval, >= ${MIN_EVERY_SECONDS}, first fire one full interval after start). Recurring tasks additionally require exactly one window bound: max_duration_seconds or end_at (absolute RFC 3339 or epoch ms), capped at one year; one-shot tasks (recurring=false) must omit the window and self-archive after their single fire. Optional start_at schedules the first anchor in the future. delivery_policy: followup (default; new turn when the agent is idle, busy waits and coalesces) or steer (lands at the next step boundary, for watchdogs). execution_mode: sub-agent (default; the prompt is worked by an isolated background sub-agent, then cron_report backfills the result) or self (handled in this conversation). The tool result echoes absolute ISO times including next_fire — never compute times yourself.`;
+const CREATE_DESCRIPTION = `Create a bounded scheduled task (no infinite cron) bound to exactly one session (ADR 0010 — there is no global delivery). Supply exactly one rule: cron (5-field expression, host-local time) or every_seconds (interval, >= ${MIN_EVERY_SECONDS}, first fire one full interval after start). Recurring tasks additionally require exactly one window bound: max_duration_seconds or end_at (absolute RFC 3339 or epoch ms), capped at one year; one-shot tasks (recurring=false) must omit the window and self-archive after their single fire. Optional start_at schedules the first anchor in the future. attach chooses the bound session: 'creator' (default) delivers every fire to this session; 'new' opens a dedicated session for the task (background monitors that should not pollute this conversation). Fires whose session is stopped or unresolvable are skipped, never delivered late. delivery_policy: followup (default; new turn when the session agent is idle, busy waits and coalesces) or steer (lands at the next step boundary, for watchdogs). execution_mode: sub-agent (default; the prompt is worked by an isolated background sub-agent, then cron_report backfills the result) or self (handled in the bound conversation). The tool result echoes absolute ISO times including next_fire — never compute times yourself.`;
 
 const DELETE_DESCRIPTION =
 	'Delete one active cron task by its id and archive it to history as cancelled. Unknown ids return deleted: false. To end a monitor after a terminal observation, delete the task after calling cron_report.';
 
 const LIST_DESCRIPTION =
-	'List every active cron task with rule, window, next fire time, and the retained fire records (most recent first-capped). Times are absolute ISO strings.';
+	'List every active cron task with rule, bound session, window, next fire time, and the retained fire records (most recent first-capped). Times are absolute ISO strings.';
 
 const REPORT_DESCRIPTION =
 	'Report the outcome of one cron fire after the work completes: status and a one-line summary including the task id for traceability. Required after a cron-fired sub-agent finishes. One-shot tasks archive automatically on report.';
@@ -90,6 +108,10 @@ export function registerCronTools(toolCtx: ToolRegistrarContext, agent: ToolAgen
 					cron: { type: 'string', description: '5-field cron expression, e.g. "*/10 * * * *" or "0 9 * * 1-5" (host-local time).' },
 					every_seconds: { type: 'number', description: `Interval rule in seconds, >= ${MIN_EVERY_SECONDS}; first fire one interval after start_at.` },
 					recurring: { type: 'boolean', description: 'Repeat after firing (default true). false = one-shot; must omit window bounds.' },
+					attach: {
+						type: 'string',
+						description: "'creator' (default) binds this session — every fire lands here; 'new' opens a dedicated session for the task (background monitors).",
+					},
 					max_duration_seconds: { type: 'number', description: 'Validity window length in seconds (recurring tasks: required unless end_at). Max one year.' },
 					end_at: {
 						oneOf: [{ type: 'string' }, { type: 'number' }],
@@ -100,18 +122,27 @@ export function registerCronTools(toolCtx: ToolRegistrarContext, agent: ToolAgen
 						description: 'Optional first anchor as RFC 3339 string (with offset) or epoch ms; must be in the future.',
 					},
 					delivery_policy: { type: 'string', description: '"followup" (default) waits for idle and coalesces; "steer" lands at the next step boundary mid-turn.' },
-					execution_mode: { type: 'string', description: '"sub-agent" (default) spawns an isolated worker; "self" handles the prompt in the target conversation.' },
+					execution_mode: { type: 'string', description: '"sub-agent" (default) spawns an isolated worker; "self" handles the prompt in the bound conversation.' },
 				},
 				output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
 				async execute(args, exec) {
 					const out: Record<string, JsonValue> = { ok: false, id: '', error: 'stale tool registration' };
 					if (exec.agent !== agent) return out;
+					if (delegationDepthOf(agent) > 0) {
+						return {
+							ok: false,
+							id: '',
+							error: 'delegated child sessions cannot own cron tasks: this session never receives deliveries. Create the task from a top-level session.',
+						};
+					}
 					try {
 						const task = await engine.createTask(args as Record<string, unknown>, agent.id);
 						const view = taskView(task);
 						return {
 							ok: true,
 							id: task.id,
+							attach: task.attach,
+							session_id: task.sessionId,
 							rule_human: ruleToHuman(task.selector),
 							start_at: iso(task.startAt),
 							window_end: task.windowEnd === null ? null : iso(task.windowEnd),

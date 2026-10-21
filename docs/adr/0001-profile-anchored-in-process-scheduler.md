@@ -1,5 +1,11 @@
 # Profile-anchored, in-process scheduler
 
+> **Partially superseded by [ADR 0010](0010-session-anchored-delivery.md)**:
+> the in-process scheduler and the profile-level store stand, but delivery is
+> no longer global — every task binds exactly one session (creator or a
+> dedicated new one), and "fires into whichever live root agent exists" no
+> longer holds.
+
 dsh has no native cron (official `dsh-schedule` is session-scoped reminders only, and the protocol explicitly excludes cron expressions). We decided dsh-cron v1 is an **in-process plugin whose task store lives at profile level**: tasks persist under the dsh home and fire into whichever live root agent exists, regardless of surface (TUI / web / feishu). This makes tasks cross-session and cross-surface, and positions dsh-cron as the complement of dsh-schedule (session-scoped reminders) rather than a duplicate.
 
 ## Considered Options

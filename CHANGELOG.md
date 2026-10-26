@@ -2,12 +2,17 @@
 
 ## Unreleased
 
-### Added
-- **内附 skill 默认安装（dsh-cron-config）**：`skill/cron` 更名 `skill/dsh-cron-config`（生态惯例 skill 名一律 -config 结尾），插件 boot 时经 `ctx.skills.registerProvider` 挂载进宿主 skill 注册表（bundled rank 600，model+user 双可调用）——装插件即装 skill，卸载即消失零残留，旧的手动 `cp` 到 `$DSH_HOME/skills` 路径废弃（残留的旧 `skills/cron` 目录会遮蔽包内指南，README 提示清理）。`stripFrontmatter` 让 provider 供出剥掉 frontmatter 的正文（与 filesystem provider 同形）；dsh-skill 仅 type-only import（其发布 lib 会拖宿主 closure 兄弟包），`BUNDLED_SKILL_RANK` 本地拷贝。测试 +5（provider 注册/描述与 frontmatter 逐字节一致/名称 -config 惯例/正文剥离/stripFrontmatter 边界）。
+## 0.6.1 (2026-10-26)
+
+### Fixed
+- **Every peer is now optional (`peerDependenciesMeta.optional: true`), same contract as llm-proxy 0.7.3 / tui-pi 2.28.2** — npm-class profile installs auto-resolve hard peers from the stable tower (`@deepseek-ai/dsh-agent` et al. → `0.2.0-rc.2`), and those exact-pinned foreign-tower copies shadow the host closure: on a `0.2.1-rc.3` host the pre-flight gate disabled `dsh-session`/`dsh-agent`/`dsh-settings`/… rows and "real-host boot" failed in fan56/dsh-subagent-registry's weekly `e2e install` (run 40313931959, PASS=20 FAIL=1; the same failure class first seen 10-19). Marking peers optional stops the package manager from materializing them at all — the host runtime supplies the real closure. No code change; the compile/test dev pins stay `0.2.1-rc.2`.
 
 ## 0.6.0 (2026-10-21)
 
 > Versions 0.4.0–0.5.1 shipped from this repo without CHANGELOG entries; see `git tag -l` and npm for those.
+
+### Added
+- **内附 skill 默认安装（dsh-cron-config）**：`skill/cron` 更名 `skill/dsh-cron-config`（生态惯例 skill 名一律 -config 结尾），插件 boot 时经 `ctx.skills.registerProvider` 挂载进宿主 skill 注册表（bundled rank 600，model+user 双可调用）——装插件即装 skill，卸载即消失零残留，旧的手动 `cp` 到 `$DSH_HOME/skills` 路径废弃（残留的旧 `skills/cron` 目录会遮蔽包内指南，README 提示清理）。`stripFrontmatter` 让 provider 供出剥掉 frontmatter 的正文（与 filesystem provider 同形）；dsh-skill 仅 type-only import（其发布 lib 会拖宿主 closure 兄弟包），`BUNDLED_SKILL_RANK` 本地拷贝。测试 +5（provider 注册/描述与 frontmatter 逐字节一致/名称 -config 惯例/正文剥离/stripFrontmatter 边界）。（切账归位 2026-10-26：本条随 0.6.0 发布，原误堆 Unreleased。）
 
 ### Changed
 - **任务必须绑定会话，禁止全局投递（ADR 0010，推翻 ADR 0001 的投递半边）**：`cron_create` 新增 `attach` 参数——`creator`（默认，绑定创建时的会话，即 `agent.id`）| `new`（插件当场 `ctx.agents.create()` 开专属会话 `session-<uuid>`，cwd 继承创建者；后台监控与对话隔离）。引擎 `targets()`（投给任意首个活 root）删除，改为 per-task `resolveTarget`：活查 `ctx.agents.get(sessionId)` → 冷走 `ctx.sessionController.resolveAgent` 按需恢复会话投递 → 查无/子代理拒 → 按 ADR 0002 skip。生命周期对齐官方 dsh-schedule：`workspace/session-stop` 取消该会话全部任务（归档 cancelled）、带活跃任务的会话经 `workspace/session-activity` waterfall 拒绝归档、boot 时对绑定会话查无（活表+持久化都没有）的任务一次性归档 cancelled。子代理会话双侧拒绝（创建即拒；投递侧 `delegationDepthOf` 对齐 dsh-subagent 公式内联）。存量升级：pre-0010 无绑定任务文件宽松读入、rehydrate 时全部归档 cancelled（store 不静默丢弃）。/cron 命令面：`--new-session` 旗标、list/describe 展示 `attach`+`session`。新增 `src/attach.ts`（结构切片依赖注入，可离宿主单测）；devDeps 加 `@deepseek-ai/dsh-workspace`（type-only augment：SessionActivityKindMap `cron: true` + workspace 事件），cordis dev pin 4.0.4→4.0.5（dsh-workspace peer 要求 ~4.0.5）。测试 55→75（scheduler 绑定/专属会话/unbound 迁移 + attach 模块 9 例 + tools 子代理拒绝/绑定字段 + store 旧格式兼容读）；真实宿主 boot smoke 过。

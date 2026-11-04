@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Switch license from MIT to Apache-2.0
+
 ## 0.6.1 (2026-10-26)
 
 ### Fixed

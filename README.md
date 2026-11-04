@@ -186,4 +186,6 @@ Ported from [@aiwayds/pi-kimi-cron](https://github.com/fan56/pi-kimi-cron) (itse
 
 ## License
 
-[MIT](./LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/license/apache-2-0/)
+
+Licensed under [Apache-2.0](./LICENSE).

@@ -2,7 +2,7 @@
   "name": "@aiwayds/dsh-cron",
   "version": "0.6.1",
   "description": "dsh plugin: cron scheduling — bounded tasks with calendar & interval rules, delivered to live agents",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "lib/index.js",
   "icon": "./icon.svg",

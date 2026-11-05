@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **0.2.2-rc.1 wave**: devDeps `@deepseek-ai/*` exact pins `0.2.1-rc.5` → `0.2.2-rc.1` across the eleven-package closure, and the exact `@deepseek-ai/schemastery` pin `3.18.4` → `3.19.0` (the version the 0.2.2-rc.1 host closure ships and peer-demands `~3.19.0`); the `@deepseek-ai/cordis` devDep stays the `^4.0.5` range (already admits 4.1.0, what the new closure peer-demands). Peer floors unchanged — pre-flight `includePrerelease` already matches 0.2.2-rc.1. `pnpm-lock.yaml` regenerated against registry.npmjs.org. Zero code changes — `MessageSourceMap{cron}` and the `tools.register` surface are unchanged in 0.2.2-rc.1; verified against a real 0.2.2-rc.1 host closure (scratch `dsh@0.2.2-rc.1` install, cordis 4.1.0): typecheck clean, `npm test` exit 0 with 0 failures (68 per-file self-reported assertions + 8 `node:test` entries; packaged-install pass), boot smoke pass.
 - Switch license from MIT to Apache-2.0
 
 ## 0.6.1 (2026-10-26)

@@ -134,7 +134,7 @@ jobs:
           echo "DSH_CLOSURE_DIR=${DSH_DIR}/node_modules/@deepseek-ai" >> "$GITHUB_ENV"
 
       - name: Link dsh closure types
-        # Same step ci.yml runs after installing the CLI: the postinstall
+        # Same step ci.yml runs after installing the CLI: the prepare
         # linker ran BEFORE the dsh install existed (a no-op), and the
         # 0.1.7-rc.1 closure's dsh-tools hard-imports @deepseek-ai/dsh-sandbox
         # at runtime — without the relink the unit suite dies on

@@ -1,6 +1,10 @@
 # @aiwayds/dsh-cron
 
-## Unreleased
+## 0.7.1 (2026-11-13)
+
+### Fixed
+- **The published package no longer ships an install lifecycle hook — `postinstall` became `prepare` — so pnpm 11 updates stop failing with `ERR_PNPM_IGNORED_BUILDS` (see dsh-subagent-registry#10).** pnpm 11 defaults to `strictDepBuilds`: installing a dependency that declares an unapproved `preinstall`/`install`/`postinstall` exits non-zero, and the dsh host plugin manager rolls the update back. npm and pnpm never run `prepare` for registry dependencies, and pnpm's gate set is exactly those three install hooks, so the published manifest is now hook-free — the dev closure linking keeps running from the root `prepare` hook, while the CI/release steps that call the linker explicitly are unaffected.
+- **The closure linker also stands down when `INIT_CWD` is set and is not the repo root** — npm runs `prepare` inside a throwaway clone when installing a git dependency, and a root install invoked from a subdirectory resolves here with `INIT_CWD` elsewhere. `INIT_CWD` equal to the repo root (a normal root install) and an unset `INIT_CWD` (a direct `node scripts/link-dsh-closure.mjs` call) still link; a `realpathSync` failure exits 0.
 
 ### Changed
 - **0.2.2-rc.2 wave**: devDeps `@deepseek-ai/*` exact pins `0.2.2-rc.1` → `0.2.2-rc.2` across the eleven-package closure. Peer floors unchanged — pre-flight `includePrerelease` already matches 0.2.2-rc.2. `pnpm-lock.yaml` regenerated against registry.npmjs.org. Zero code changes — verified against a real 0.2.2-rc.2 host closure (scratch `dsh@0.2.2-rc.2` install, DSH_CLOSURE_DIR relink): typecheck clean, `pnpm test` exit 0 with 0 failures (15 `node:test` entries; packaged-install pass), boot smoke pass.

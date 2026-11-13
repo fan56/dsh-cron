@@ -7,9 +7,12 @@
 //      dsh.profile.bundles entry (same shape as the user's real profiles)
 //   3. npm install — lifecycle scripts ON, i.e. the consumer path. pnpm ≥10
 //      blocks dependency lifecycle scripts by default, which is exactly how
-//      the #2-class tarball breakage (postinstall → unshipped file) stayed
-//      invisible to every pnpm-based install; npm-class clients (the desktop
-//      plugin manager) are the ones that run it.
+//      the #2-class tarball breakage (an install hook → unshipped file)
+//      stayed invisible to every pnpm-based install; npm-class clients (the
+//      desktop plugin manager) are the ones that run it. Since the pnpm 11
+//      strictDepBuilds fix the tarball has no install hook to run (the dev
+//      linker rides `prepare`, which npm/pnpm skip for registry
+//      dependencies), so this proves the hook-free package installs clean.
 //   4. `dsh --profile smoke --dump-config` must compose the plugin into the
 //      tree (mount/patch-layer proof)
 //   5. a real boot under a timeout must load the plugin tree without a
